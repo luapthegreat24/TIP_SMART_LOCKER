@@ -9,6 +9,7 @@ class HomePageScreen extends StatelessWidget {
   final Widget statRow;
   final Widget locationCard;
   final Widget activityCard;
+  final double contentBottomPadding;
 
   const HomePageScreen({
     super.key,
@@ -18,21 +19,28 @@ class HomePageScreen extends StatelessWidget {
     required this.statRow,
     required this.locationCard,
     required this.activityCard,
+    required this.contentBottomPadding,
   });
 
   @override
   Widget build(BuildContext context) {
     return LayoutBuilder(
       builder: (context, constraints) {
-        final minContentHeight = (constraints.maxHeight - T.gap16 - 98).clamp(
-          0.0,
-          double.infinity,
-        );
+        final minContentHeight =
+            (constraints.maxHeight - T.gap16 - contentBottomPadding).clamp(
+              0.0,
+              double.infinity,
+            );
 
         return SingleChildScrollView(
           key: const ValueKey(0),
           physics: const BouncingScrollPhysics(),
-          padding: const EdgeInsets.fromLTRB(T.gap20, T.gap16, T.gap20, 98),
+          padding: EdgeInsets.fromLTRB(
+            T.gap20,
+            T.gap16,
+            T.gap20,
+            contentBottomPadding,
+          ),
           child: ConstrainedBox(
             constraints: BoxConstraints(minHeight: minContentHeight),
             child: Column(

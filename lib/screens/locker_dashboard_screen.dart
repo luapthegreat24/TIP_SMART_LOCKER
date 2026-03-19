@@ -10,8 +10,10 @@ import '../widgets/comic_card.dart';
 import '../widgets/floating_nav_bar.dart';
 import '../widgets/halftone_painter.dart';
 import '../widgets/layered_panel.dart';
+import '../widgets/lock_toast_overlay.dart';
 import '../widgets/top_back_button.dart';
 import 'home_page.dart';
+import 'locker_map_screen.dart';
 import 'profile_screen.dart';
 import 'settings_screen.dart';
 
@@ -98,6 +100,9 @@ class _LockerDashboardScreenState extends State<LockerDashboardScreen>
     with TickerProviderStateMixin {
   static const double _navBottomOffset = 14;
   static const double _navHeight = 64;
+  static const double _contentGapAboveNav = T.gap20;
+  static const double _contentBottomPadding =
+      _navBottomOffset + _navHeight + _contentGapAboveNav;
   static const double _fabGapAboveNav = 12;
   static const Duration _autoLockDelay = Duration(seconds: 30);
 
@@ -140,9 +145,7 @@ class _LockerDashboardScreenState extends State<LockerDashboardScreen>
   late final List<Animation<double>> _slides;
   late final Animation<Color?> _lockColor;
   late final Animation<Color?> _lockBg;
-  OverlayEntry? _lockToastEntry;
-  AnimationController? _lockToastCtrl;
-  int _lockToastTicket = 0;
+  final LockToastOverlay _lockToastOverlay = LockToastOverlay();
   StreamSubscription<List<LockerLogEntry>>? _logsSubscription;
   Timer? _autoLockTimer;
 
@@ -191,7 +194,7 @@ class _LockerDashboardScreenState extends State<LockerDashboardScreen>
   @override
   void dispose() {
     _autoLockTimer?.cancel();
-    _removeLockToast();
+    _lockToastOverlay.dispose();
     _logsSubscription?.cancel();
     _entranceCtrl.dispose();
     _lockCtrl.dispose();
@@ -226,123 +229,10 @@ class _LockerDashboardScreenState extends State<LockerDashboardScreen>
     );
   }
 
-  void _removeLockToast() {
-    _lockToastCtrl?.dispose();
-    _lockToastCtrl = null;
-    _lockToastEntry?.remove();
-    _lockToastEntry = null;
-  }
-
-  Future<void> _showLockToast() async {
-    if (!mounted) {
-      return;
-    }
-
-    final ticket = ++_lockToastTicket;
-    final overlay = Overlay.of(context, rootOverlay: true);
-    final accent = _isLocked ? T.green : T.red;
-    final accentBg = _isLocked ? T.greenDim : T.redDim;
-
-    _removeLockToast();
-
-    final controller = AnimationController(
-      vsync: this,
-      duration: const Duration(milliseconds: 240),
-      reverseDuration: const Duration(milliseconds: 190),
-    );
-    _lockToastCtrl = controller;
-
-    final animation = CurvedAnimation(
-      parent: controller,
-      curve: Curves.easeOutCubic,
-      reverseCurve: Curves.easeInCubic,
-    );
-
-    final entry = OverlayEntry(
-      builder: (toastContext) {
-        final top = MediaQuery.paddingOf(toastContext).top + 112;
-        return Positioned(
-          top: top,
-          right: T.gap16,
-          child: FadeTransition(
-            opacity: animation,
-            child: SlideTransition(
-              position: Tween<Offset>(
-                begin: const Offset(0.20, 0),
-                end: Offset.zero,
-              ).animate(animation),
-              child: Material(
-                color: Colors.transparent,
-                child: Container(
-                  constraints: const BoxConstraints(maxWidth: 360),
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 16,
-                    vertical: 11,
-                  ),
-                  decoration: BoxDecoration(
-                    color: T.surfaceAlt,
-                    borderRadius: BorderRadius.circular(T.r12),
-                    border: Border.all(
-                      color: accent.withOpacity(0.25),
-                      width: T.strokeSm,
-                    ),
-                  ),
-                  child: Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      Container(
-                        width: 30,
-                        height: 30,
-                        decoration: BoxDecoration(
-                          color: accentBg,
-                          borderRadius: BorderRadius.circular(T.r8),
-                        ),
-                        child: Icon(
-                          _isLocked
-                              ? Icons.lock_rounded
-                              : Icons.lock_open_rounded,
-                          size: 17,
-                          color: accent,
-                        ),
-                      ),
-                      const SizedBox(width: 12),
-                      Text(
-                        _isLocked ? 'Locker locked' : 'Locker unlocked',
-                        style: const TextStyle(
-                          fontSize: 16,
-                          fontWeight: FontWeight.w700,
-                          color: T.textPrimary,
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-              ),
-            ),
-          ),
-        );
-      },
-    );
-
-    _lockToastEntry = entry;
-    overlay.insert(entry);
-
-    await controller.forward();
-    await Future<void>.delayed(const Duration(milliseconds: 1100));
-
-    if (!mounted ||
-        ticket != _lockToastTicket ||
-        _lockToastCtrl != controller) {
-      return;
-    }
-    await controller.reverse();
-
-    if (mounted && ticket == _lockToastTicket && _lockToastCtrl == controller) {
-      _removeLockToast();
-    }
-  }
-
-  Future<void> _toggleLock() async {
+  Future<void> _toggleLock({
+    bool showToast = true,
+    bool playHaptic = true,
+  }) async {
     final wasLocked = _isLocked;
     final now = DateTime.now();
     setState(() {
@@ -350,8 +240,18 @@ class _LockerDashboardScreenState extends State<LockerDashboardScreen>
       _lastToggledAt = now;
     });
     _isLocked ? _lockCtrl.reverse() : _lockCtrl.forward();
-    HapticFeedback.heavyImpact();
-    _showLockToast();
+    if (playHaptic) {
+      HapticFeedback.heavyImpact();
+    }
+    if (showToast) {
+      unawaited(
+        _lockToastOverlay.show(
+          context: context,
+          vsync: this,
+          isLocked: _isLocked,
+        ),
+      );
+    }
 
     final userId = widget.user.userId.trim();
     final lockerId = widget.user.activeLockerId.trim();
@@ -403,7 +303,13 @@ class _LockerDashboardScreenState extends State<LockerDashboardScreen>
     });
     _lockCtrl.reverse();
     HapticFeedback.mediumImpact();
-    _showLockToast();
+    unawaited(
+      _lockToastOverlay.show(
+        context: context,
+        vsync: this,
+        isLocked: _isLocked,
+      ),
+    );
 
     final userId = widget.user.userId.trim();
     final lockerId = widget.user.activeLockerId.trim();
@@ -463,8 +369,24 @@ class _LockerDashboardScreenState extends State<LockerDashboardScreen>
           initialActivities: _activities,
           initialLockState: _isLocked,
           onToggleLock: () {
-            unawaited(_toggleLock());
+            unawaited(_toggleLock(showToast: false, playHaptic: false));
           },
+          onNavigateTab: _onTabPressed,
+        ),
+      ),
+    );
+  }
+
+  void _openLockerMapPage() {
+    Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (_) => LockerMapScreen(
+          lockerLocation: _lockerLocationLabel,
+          campus: widget.user.campus,
+          assignedLockerId: _lockerIdLabel,
+          mapImageAssetPath: 'assets/images/TIP_MAP.png',
+          initialLockState: _isLocked,
+          onToggleLock: () => _toggleLock(showToast: false, playHaptic: false),
           onNavigateTab: _onTabPressed,
         ),
       ),
@@ -599,33 +521,32 @@ class _LockerDashboardScreenState extends State<LockerDashboardScreen>
               HapticFeedback.selectionClick();
               _registerUserActivity();
             },
-            child: Container(
+            child: AnimatedContainer(
+              duration: const Duration(milliseconds: 220),
+              curve: Curves.easeOutCubic,
               width: fabSize,
               height: fabSize,
               decoration: BoxDecoration(
-                color: bg,
-                borderRadius: BorderRadius.circular(T.r16),
-                border: Border.all(
-                  color: color.withOpacity(0.5),
-                  width: T.stroke,
-                ),
+                shape: BoxShape.circle,
+                color: bg.withOpacity(0.82),
+                border: Border.all(color: color.withOpacity(0.55), width: 1),
                 boxShadow: [
                   BoxShadow(
-                    color: color.withOpacity(0.28),
-                    offset: const Offset(0, 4),
+                    color: T.shadow.withOpacity(0.52),
+                    offset: const Offset(0, 6),
                     blurRadius: 14,
                   ),
                 ],
               ),
               child: AnimatedSwitcher(
-                duration: const Duration(milliseconds: 280),
+                duration: const Duration(milliseconds: 220),
                 transitionBuilder: (child, anim) =>
-                    ScaleTransition(scale: anim, child: child),
+                    FadeTransition(opacity: anim, child: child),
                 child: Icon(
                   _isLocked ? Icons.lock_rounded : Icons.lock_open_rounded,
                   key: ValueKey(_isLocked),
                   color: color,
-                  size: 26,
+                  size: 24,
                 ),
               ),
             ),
@@ -954,6 +875,7 @@ class _LockerDashboardScreenState extends State<LockerDashboardScreen>
   Widget _buildLocationCard() {
     return ComicCard(
       color: T.surface,
+      onTap: _openLockerMapPage,
       child: Padding(
         padding: const EdgeInsets.all(T.gap16),
         child: Row(
@@ -1187,18 +1109,21 @@ class _LockerDashboardScreenState extends State<LockerDashboardScreen>
                         statRow: _buildStatRow(),
                         locationCard: _buildLocationCard(),
                         activityCard: _buildActivityCard(),
+                        contentBottomPadding: _contentBottomPadding,
                       )
                     : _activeTab == 1
                     ? ProfileScreen(
                         layeredPanel: _buildLayeredPanel,
                         user: widget.user,
                         onBack: () => _onTabPressed(0),
+                        contentBottomPadding: _contentBottomPadding,
                       )
                     : SettingsScreen(
                         layeredPanel: _buildLayeredPanel,
                         onBack: () => _onTabPressed(0),
                         user: widget.user,
                         onLogout: widget.onLogout,
+                        contentBottomPadding: _contentBottomPadding,
                         notifEnabled: _notifEnabled,
                         biometricEnabled: _biometricEnabled,
                         autoLock: _autoLock,
@@ -1645,7 +1570,8 @@ class _ActivityLogPage extends StatefulWidget {
   State<_ActivityLogPage> createState() => _ActivityLogPageState();
 }
 
-class _ActivityLogPageState extends State<_ActivityLogPage> {
+class _ActivityLogPageState extends State<_ActivityLogPage>
+    with TickerProviderStateMixin {
   static const double _navBottomOffset = 14;
   static const double _navHeight = 64;
   static const double _fabGapAboveNav = 12;
@@ -1658,6 +1584,7 @@ class _ActivityLogPageState extends State<_ActivityLogPage> {
   late bool _isLockedView;
   int _activeTab = 0;
   StreamSubscription<List<LockerLogEntry>>? _logsSubscription;
+  final LockToastOverlay _lockToastOverlay = LockToastOverlay();
 
   static const List<NavEntry> _tabs = [
     NavEntry(Icons.home_outlined, 'My Locker'),
@@ -1675,6 +1602,7 @@ class _ActivityLogPageState extends State<_ActivityLogPage> {
 
   @override
   void dispose() {
+    _lockToastOverlay.dispose();
     _logsSubscription?.cancel();
     _searchCtrl.dispose();
     super.dispose();
@@ -1689,8 +1617,15 @@ class _ActivityLogPageState extends State<_ActivityLogPage> {
 
   void _onToggleLockFromLogs() {
     HapticFeedback.heavyImpact();
-    widget.onToggleLock();
     setState(() => _isLockedView = !_isLockedView);
+    unawaited(
+      _lockToastOverlay.show(
+        context: context,
+        vsync: this,
+        isLocked: _isLockedView,
+      ),
+    );
+    widget.onToggleLock();
   }
 
   void _subscribeToLogs() {

@@ -5,21 +5,6 @@ import '../core/auth_controller.dart';
 import '../core/design_tokens.dart';
 import '../widgets/halftone_painter.dart';
 
-// ─────────────────────────────────────────────────────────────────────────────
-//  AuthScreen — Editorial Dark Minimalism
-//
-//  The philosophy: subtract until it hurts.
-//
-//  • Massive headline owns the top third — nothing else matters up there
-//  • Fields have ONLY a bottom border line — no box, no fill, no label card
-//  • Label lives as a tiny 9px ghost above each field
-//  • No section cards, no headers, no icons per field
-//  • Mode switch = one small underlined word that morphs
-//  • The _layeredPanel appears exactly once — on the submit button
-//  • 80% of the screen is T.bg darkness. That IS the design.
-//  • Halftone, stagger anims, ComicCard press physics — all from main.dart
-// ─────────────────────────────────────────────────────────────────────────────
-
 class AuthScreen extends StatefulWidget {
   const AuthScreen({super.key, required this.controller});
   final AuthController controller;

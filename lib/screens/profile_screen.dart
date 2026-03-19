@@ -9,12 +9,14 @@ class ProfileScreen extends StatelessWidget {
   final LayeredPanelBuilder layeredPanel;
   final VoidCallback onBack;
   final AppUser user;
+  final double contentBottomPadding;
 
   const ProfileScreen({
     super.key,
     required this.layeredPanel,
     required this.onBack,
     required this.user,
+    required this.contentBottomPadding,
   });
 
   String get _joinedLabel {
@@ -40,15 +42,21 @@ class ProfileScreen extends StatelessWidget {
   Widget build(BuildContext context) {
     return LayoutBuilder(
       builder: (context, constraints) {
-        final minContentHeight = (constraints.maxHeight - T.gap16 - 76).clamp(
-          0.0,
-          double.infinity,
-        );
+        final minContentHeight =
+            (constraints.maxHeight - T.gap16 - contentBottomPadding).clamp(
+              0.0,
+              double.infinity,
+            );
 
         return SingleChildScrollView(
           key: const ValueKey(1),
           physics: const BouncingScrollPhysics(),
-          padding: const EdgeInsets.fromLTRB(T.gap20, T.gap16, T.gap20, 76),
+          padding: EdgeInsets.fromLTRB(
+            T.gap20,
+            T.gap16,
+            T.gap20,
+            contentBottomPadding,
+          ),
           child: ConstrainedBox(
             constraints: BoxConstraints(minHeight: minContentHeight),
             child: Column(
