@@ -1,0 +1,1139 @@
+import 'dart:async';
+
+import 'package:characters/characters.dart';
+import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:firebase_auth/firebase_auth.dart';
+import 'package:flutter/foundation.dart';
+
+import 'auth_local_store.dart';
+
+class AppUser {
+  const AppUser({
+    required this.userId,
+    required this.firstName,
+    required this.lastName,
+    required this.email,
+    required this.studentId,
+    required this.campus,
+    required this.lockerLocation,
+    required this.activeLockerId,
+    required this.joinedAt,
+    this.role = 'User',
+  });
+
+  final String userId;
+  final String firstName;
+  final String lastName;
+  final String email;
+  final String studentId;
+  final String campus;
+  final String lockerLocation;
+  final String activeLockerId;
+  final DateTime joinedAt;
+  final String role;
+
+  AppUser copyWith({
+    String? userId,
+    String? firstName,
+    String? lastName,
+    String? email,
+    String? studentId,
+    String? campus,
+    String? lockerLocation,
+    String? activeLockerId,
+    DateTime? joinedAt,
+    String? role,
+  }) {
+    return AppUser(
+      userId: userId ?? this.userId,
+      firstName: firstName ?? this.firstName,
+      lastName: lastName ?? this.lastName,
+      email: email ?? this.email,
+      studentId: studentId ?? this.studentId,
+      campus: campus ?? this.campus,
+      lockerLocation: lockerLocation ?? this.lockerLocation,
+      activeLockerId: activeLockerId ?? this.activeLockerId,
+      joinedAt: joinedAt ?? this.joinedAt,
+      role: role ?? this.role,
+    );
+  }
+
+  String get fullName => '$firstName $lastName'.trim();
+
+  String get initials {
+    final first = firstName.trim();
+    final last = lastName.trim();
+    if (first.isEmpty && last.isEmpty) {
+      return '?';
+    }
+    if (first.isEmpty) {
+      return last.characters.first.toUpperCase();
+    }
+    if (last.isEmpty) {
+      return first.characters.first.toUpperCase();
+    }
+    return (first.characters.first + last.characters.first).toUpperCase();
+  }
+
+  String get lockerLabel =>
+      firstName.endsWith('s') ? '$firstName\' Locker' : '$firstName\'s Locker';
+
+  Map<String, dynamic> toJson() => {
+    'userId': userId,
+    'firstName': firstName,
+    'lastName': lastName,
+    'email': email,
+    'studentId': studentId,
+    'campus': campus,
+    'lockerLocation': lockerLocation,
+    'activeLockerId': activeLockerId,
+    'joinedAt': joinedAt.toIso8601String(),
+    'role': role,
+  };
+
+  factory AppUser.fromJson(Map<String, dynamic> json) {
+    return AppUser(
+      userId: json['userId'] as String? ?? '',
+      firstName: json['firstName'] as String? ?? '',
+      lastName: json['lastName'] as String? ?? '',
+      email: json['email'] as String? ?? '',
+      studentId: json['studentId'] as String? ?? '',
+      campus: json['campus'] as String? ?? '',
+      lockerLocation: json['lockerLocation'] as String? ?? '',
+      activeLockerId: json['activeLockerId'] as String? ?? '',
+      joinedAt:
+          DateTime.tryParse(json['joinedAt'] as String? ?? '') ??
+          DateTime.now(),
+      role: json['role'] as String? ?? 'User',
+    );
+  }
+}
+
+class AuthController extends ChangeNotifier {
+  static const String _signupEmailDomain = '@tip.edu.ph';
+
+  AuthController({required AuthLocalStore store})
+    : _store = store,
+      _useFirebase = false,
+      _auth = null,
+      _firestore = null;
+
+  AuthController.firebase({FirebaseAuth? auth, FirebaseFirestore? firestore})
+    : _store = null,
+      _useFirebase = true,
+      _auth = auth ?? FirebaseAuth.instance,
+      _firestore = firestore ?? FirebaseFirestore.instance;
+
+  final AuthLocalStore? _store;
+  final bool _useFirebase;
+  final FirebaseAuth? _auth;
+  final FirebaseFirestore? _firestore;
+
+  final Map<String, _StoredAccount> _accounts = {};
+  final Map<String, _FirebaseLoginProfile> _firebaseLoginProfiles = {};
+  AppUser? _currentUser;
+  bool _isReady = false;
+  bool _isBusy = false;
+
+  AppUser? get currentUser => _currentUser;
+  AppUser? get registeredUser {
+    if (_useFirebase) {
+      if (_currentUser != null) {
+        return _currentUser;
+      }
+      if (_firebaseLoginProfiles.isEmpty) {
+        return null;
+      }
+      return _firebaseLoginProfiles.values.first.user;
+    }
+    if (_currentUser != null) {
+      return _currentUser;
+    }
+    if (_accounts.isEmpty) {
+      return null;
+    }
+    return _accounts.values.first.user;
+  }
+
+  List<String> get registeredEmails {
+    if (_useFirebase) {
+      return _firebaseLoginProfiles.keys.toList(growable: false);
+    }
+    return _accounts.keys.toList(growable: false);
+  }
+
+  bool get hasRegisteredAccount {
+    if (_useFirebase) {
+      return _firebaseLoginProfiles.isNotEmpty || _currentUser != null;
+    }
+    return _accounts.isNotEmpty;
+  }
+
+  bool get requiresLockerSelection {
+    final user = _currentUser;
+    if (user == null) {
+      return false;
+    }
+    return user.activeLockerId.trim().isEmpty;
+  }
+
+  bool needsLockerAssignmentForEmail(String email) {
+    final normalized = email.trim().toLowerCase();
+    if (normalized.isEmpty) {
+      return false;
+    }
+    if (_useFirebase) {
+      final profile = _firebaseLoginProfiles[normalized];
+      if (profile == null) {
+        return false;
+      }
+      return !profile.hasActiveLocker;
+    }
+    final account = _accounts[normalized];
+    if (account == null) {
+      return false;
+    }
+    return account.user.lockerLocation.trim().isEmpty;
+  }
+
+  String? studentIdForEmail(String email) {
+    final normalized = email.trim().toLowerCase();
+    if (normalized.isEmpty) {
+      return null;
+    }
+    if (_useFirebase) {
+      return _firebaseLoginProfiles[normalized]?.user.studentId;
+    }
+    return _accounts[normalized]?.user.studentId;
+  }
+
+  Future<void> ensureLockerInventory() async {
+    if (!_useFirebase) {
+      return;
+    }
+    final firestore = _firestore;
+    if (firestore == null) {
+      return;
+    }
+
+    final existing = await firestore.collection('lockers').get();
+    final existingIds = existing.docs.map((doc) => doc.id).toSet();
+
+    final floorCodes = [('Ground Floor', 'G'), ('2nd Floor', '2F')];
+
+    final batch = firestore.batch();
+    var created = 0;
+    for (var building = 1; building <= 9; building++) {
+      for (final (floorLabel, floorCode) in floorCodes) {
+        for (var lockerNumber = 1; lockerNumber <= 5; lockerNumber++) {
+          final lockerId =
+              'B$building-$floorCode-${lockerNumber.toString().padLeft(2, '0')}';
+          if (existingIds.contains(lockerId)) {
+            continue;
+          }
+
+          final ref = firestore.collection('lockers').doc(lockerId);
+          batch.set(ref, {
+            'locker_id': lockerId,
+            'locker_number': lockerId,
+            'building_number': building,
+            'floor': floorLabel,
+            'floor_code': floorCode,
+            'location': 'Building $building',
+            'locker_slot': lockerNumber,
+            'is_occupied': false,
+            'status': 'functional',
+            'current_user_id': '',
+          });
+          created++;
+        }
+      }
+    }
+
+    if (created > 0) {
+      await batch.commit();
+    }
+  }
+
+  Stream<List<LockerBuildingAvailability>> watchBuildingAvailability() {
+    return _firestore!
+        .collection('lockers')
+        .where('status', isEqualTo: 'functional')
+        .where('is_occupied', isEqualTo: false)
+        .snapshots()
+        .map((snapshot) {
+          final counts = <int, int>{};
+          for (final doc in snapshot.docs) {
+            final data = doc.data();
+            final building = (data['building_number'] as num?)?.toInt() ?? 0;
+            if (building <= 0) {
+              continue;
+            }
+            counts[building] = (counts[building] ?? 0) + 1;
+          }
+
+          final buildings =
+              counts.entries
+                  .map(
+                    (entry) => LockerBuildingAvailability(
+                      buildingNumber: entry.key,
+                      availableCount: entry.value,
+                    ),
+                  )
+                  .where((entry) => entry.availableCount > 0)
+                  .toList(growable: false)
+                ..sort((a, b) => a.buildingNumber.compareTo(b.buildingNumber));
+          return buildings;
+        });
+  }
+
+  Stream<List<LockerSlot>> watchAvailableLockers({
+    required int buildingNumber,
+    required String floor,
+  }) {
+    return _firestore!
+        .collection('lockers')
+        .where('building_number', isEqualTo: buildingNumber)
+        .where('floor', isEqualTo: floor)
+        .where('status', isEqualTo: 'functional')
+        .where('is_occupied', isEqualTo: false)
+        .snapshots()
+        .map((snapshot) {
+          final slots =
+              snapshot.docs
+                  .map((doc) => LockerSlot.fromFirestore(doc.id, doc.data()))
+                  .toList(growable: false)
+                ..sort((a, b) => a.lockerNumber.compareTo(b.lockerNumber));
+          return slots;
+        });
+  }
+
+  Stream<Map<String, int>> watchFloorAvailability({
+    required int buildingNumber,
+  }) {
+    return _firestore!
+        .collection('lockers')
+        .where('building_number', isEqualTo: buildingNumber)
+        .where('status', isEqualTo: 'functional')
+        .where('is_occupied', isEqualTo: false)
+        .snapshots()
+        .map((snapshot) {
+          final floorCounts = <String, int>{'Ground Floor': 0, '2nd Floor': 0};
+          for (final doc in snapshot.docs) {
+            final floor = (doc.data()['floor'] as String?) ?? '';
+            if (!floorCounts.containsKey(floor)) {
+              floorCounts[floor] = 0;
+            }
+            floorCounts[floor] = (floorCounts[floor] ?? 0) + 1;
+          }
+          return floorCounts;
+        });
+  }
+
+  Future<String?> assignLockerById(String lockerId) async {
+    if (!_useFirebase) {
+      return 'Locker assignment is only available in Firebase mode.';
+    }
+    final authUser = _auth!.currentUser;
+    if (authUser == null) {
+      return 'You are not logged in.';
+    }
+
+    _setBusy(true);
+    try {
+      final success = await _assignLockerToExistingUser(
+        userId: authUser.uid,
+        lockerId: lockerId,
+      );
+      if (!success) {
+        return 'This locker is no longer available.';
+      }
+
+      final refreshed = await _readFirebaseUser(authUser.uid);
+      if (refreshed == null) {
+        return 'Unable to refresh your profile after assignment.';
+      }
+      _currentUser = refreshed;
+      _firebaseLoginProfiles[refreshed.email] = _FirebaseLoginProfile(
+        user: refreshed,
+        hasActiveLocker: refreshed.activeLockerId.isNotEmpty,
+      );
+      notifyListeners();
+      return null;
+    } on FirebaseException catch (e) {
+      if (e.code == 'permission-denied') {
+        return 'Firestore denied locker assignment. Check security rules.';
+      }
+      return e.message ?? 'Failed to assign locker.';
+    } catch (_) {
+      return 'Failed to assign locker.';
+    } finally {
+      _setBusy(false);
+    }
+  }
+
+  Stream<List<LockerLogEntry>> watchLogsForUser({
+    required String userId,
+    int limit = 200,
+  }) {
+    if (!_useFirebase || userId.trim().isEmpty) {
+      return const Stream<List<LockerLogEntry>>.empty();
+    }
+
+    return _firestore!
+        .collection('logs')
+        .where('user_id', isEqualTo: userId)
+        .limit(limit)
+        .snapshots()
+        .map((snapshot) {
+          final items =
+              snapshot.docs
+                  .map(
+                    (doc) => LockerLogEntry.fromFirestore(
+                      doc.id,
+                      doc.data(),
+                      hasPendingWrites: doc.metadata.hasPendingWrites,
+                    ),
+                  )
+                  .toList(growable: false)
+                ..sort((a, b) => b.occurredAt.compareTo(a.occurredAt));
+          return items;
+        });
+  }
+
+  Future<void> addLogEvent({
+    required String userId,
+    required String lockerId,
+    required String eventType,
+    required String authMethod,
+    String? details,
+    String source = 'mobile_app',
+    String status = 'success',
+    Map<String, dynamic>? metadata,
+  }) async {
+    if (!_useFirebase || userId.trim().isEmpty) {
+      return;
+    }
+
+    final serverNow = FieldValue.serverTimestamp();
+    await _firestore!.collection('logs').add({
+      'user_id': userId,
+      'locker_id': lockerId,
+      'event_type': eventType,
+      'auth_method': authMethod,
+      'source': source,
+      'status': status,
+      'details': details ?? '',
+      'timestamp': serverNow,
+      // New canonical field for future queries while preserving legacy support.
+      'created_at': serverNow,
+      // Ensures deterministic ordering for local pending writes before
+      // Firestore resolves server timestamps.
+      'client_timestamp': Timestamp.now(),
+      if (metadata != null && metadata.isNotEmpty) 'metadata': metadata,
+    });
+  }
+
+  bool get isAuthenticated => _currentUser != null;
+  bool get isReady => _isReady;
+  bool get isBusy => _isBusy;
+
+  Future<void> restoreSession() async {
+    if (_useFirebase) {
+      return _restoreFirebaseSession();
+    }
+
+    _setBusy(true);
+    try {
+      final saved = await _store!.read();
+      if (saved == null) {
+        _isReady = true;
+        return;
+      }
+
+      _accounts.clear();
+
+      // New format: multiple accounts keyed by normalized email.
+      final accountsJson = saved['accounts'];
+      if (accountsJson is Map) {
+        for (final entry in accountsJson.entries) {
+          final email = entry.key.toString().trim().toLowerCase();
+          final value = entry.value;
+          if (value is Map<String, dynamic>) {
+            _accounts[email] = _StoredAccount.fromJson(value);
+          } else if (value is Map) {
+            _accounts[email] = _StoredAccount.fromJson(
+              value.map((k, v) => MapEntry(k.toString(), v)),
+            );
+          }
+        }
+      }
+
+      // Backward compatibility: old single-account format.
+      final accountJson = saved['account'];
+      if (_accounts.isEmpty && accountJson is Map<String, dynamic>) {
+        final account = _StoredAccount.fromJson(accountJson);
+        _accounts[account.user.email] = account;
+      } else if (_accounts.isEmpty && accountJson is Map) {
+        final account = _StoredAccount.fromJson(
+          accountJson.map((key, value) => MapEntry(key.toString(), value)),
+        );
+        _accounts[account.user.email] = account;
+      }
+
+      final sessionEmail = saved['sessionEmail'] as String?;
+      final normalizedSession = sessionEmail?.trim().toLowerCase();
+      if (normalizedSession != null &&
+          _accounts.containsKey(normalizedSession)) {
+        _currentUser = _accounts[normalizedSession]!.user;
+      }
+    } finally {
+      _isReady = true;
+      _setBusy(false);
+    }
+  }
+
+  Future<String?> signUp({
+    required String firstName,
+    required String lastName,
+    required String email,
+    required String studentId,
+    required String campus,
+    String? lockerLocation,
+    required String password,
+  }) async {
+    final normalizedEmail = email.trim().toLowerCase();
+    if (!_isAllowedSignupEmail(normalizedEmail)) {
+      return 'Only $_signupEmailDomain email addresses are allowed for sign up.';
+    }
+
+    if (_useFirebase) {
+      return _signUpWithFirebase(
+        firstName: firstName,
+        lastName: lastName,
+        email: normalizedEmail,
+        studentId: studentId,
+        campus: campus,
+        password: password,
+      );
+    }
+
+    _setBusy(true);
+    try {
+      if (_accounts.containsKey(normalizedEmail)) {
+        return 'An account with this email already exists. Log in instead.';
+      }
+
+      final user = AppUser(
+        userId: normalizedEmail,
+        firstName: firstName.trim(),
+        lastName: lastName.trim(),
+        email: normalizedEmail,
+        studentId: studentId.trim(),
+        campus: campus.trim(),
+        lockerLocation: '',
+        activeLockerId: '',
+        joinedAt: DateTime.now(),
+      );
+
+      _accounts[normalizedEmail] = _StoredAccount(
+        user: user,
+        password: password,
+      );
+      _currentUser = user;
+      await _persist();
+      return null;
+    } finally {
+      _setBusy(false);
+    }
+  }
+
+  Future<String?> login({
+    required String email,
+    required String password,
+    String? lockerLocation,
+  }) async {
+    if (_useFirebase) {
+      return _loginWithFirebase(
+        email: email,
+        password: password,
+        lockerLocation: lockerLocation,
+      );
+    }
+
+    if (_accounts.isEmpty) {
+      return 'No account found yet. Create one first.';
+    }
+
+    _setBusy(true);
+    try {
+      final normalizedEmail = email.trim().toLowerCase();
+      final account = _accounts[normalizedEmail];
+      if (account == null || account.password != password) {
+        return 'Incorrect email or password.';
+      }
+
+      _currentUser = account.user;
+      await _persist();
+      return null;
+    } finally {
+      _setBusy(false);
+    }
+  }
+
+  Future<void> logout() async {
+    if (_useFirebase) {
+      _setBusy(true);
+      try {
+        await _auth!.signOut();
+        _currentUser = null;
+      } finally {
+        _setBusy(false);
+      }
+      return;
+    }
+
+    _setBusy(true);
+    try {
+      _currentUser = null;
+      await _persist();
+    } finally {
+      _setBusy(false);
+    }
+  }
+
+  Future<void> _persist() async {
+    if (_useFirebase) {
+      notifyListeners();
+      return;
+    }
+
+    if (_accounts.isEmpty) {
+      await _store!.clear();
+      notifyListeners();
+      return;
+    }
+
+    final encodedAccounts = <String, dynamic>{
+      for (final entry in _accounts.entries) entry.key: entry.value.toJson(),
+    };
+
+    await _store!.write({
+      'accounts': encodedAccounts,
+      'sessionEmail': _currentUser?.email,
+    });
+    notifyListeners();
+  }
+
+  Future<void> _restoreFirebaseSession() async {
+    _setBusy(true);
+    try {
+      final authUser = _auth!.currentUser;
+      if (authUser == null) {
+        _currentUser = null;
+      } else {
+        try {
+          _currentUser = await _readFirebaseUser(
+            authUser.uid,
+          ).timeout(const Duration(seconds: 6));
+        } catch (_) {
+          // Avoid blocking startup when Firestore is temporarily unavailable.
+          _currentUser = null;
+        }
+      }
+
+      _isReady = true;
+      notifyListeners();
+
+      unawaited(_warmFirebaseCaches());
+    } finally {
+      _isReady = true;
+      _setBusy(false);
+    }
+  }
+
+  Future<void> _warmFirebaseCaches() async {
+    try {
+      await ensureLockerInventory();
+      await _loadFirebaseLoginProfiles();
+      notifyListeners();
+    } catch (_) {
+      // Keep app usable even if cache warmup fails.
+    }
+  }
+
+  Future<void> _loadFirebaseLoginProfiles() async {
+    _firebaseLoginProfiles.clear();
+    try {
+      final snapshot = await _firestore!.collection('users').limit(200).get();
+      for (final doc in snapshot.docs) {
+        final data = doc.data();
+        final email = (data['email'] as String? ?? '').trim().toLowerCase();
+        if (email.isEmpty) {
+          continue;
+        }
+        final user = _fromFirebaseUserData(doc.id, data);
+        final activeLockerId = (data['active_locker_id'] as String? ?? '')
+            .trim();
+        _firebaseLoginProfiles[email] = _FirebaseLoginProfile(
+          user: user,
+          hasActiveLocker: activeLockerId.isNotEmpty,
+        );
+      }
+    } catch (_) {
+      // Keep UI functional even when users listing is blocked by rules.
+    }
+  }
+
+  Future<String?> _signUpWithFirebase({
+    required String firstName,
+    required String lastName,
+    required String email,
+    required String studentId,
+    required String campus,
+    required String password,
+  }) async {
+    _setBusy(true);
+    UserCredential? credentials;
+    try {
+      final normalizedEmail = email.trim().toLowerCase();
+
+      credentials = await _auth!.createUserWithEmailAndPassword(
+        email: normalizedEmail,
+        password: password,
+      );
+      final authUser = credentials.user;
+      if (authUser == null) {
+        return 'Unable to create account right now. Please try again.';
+      }
+
+      await _createUserProfileInFirestore(
+        userId: authUser.uid,
+        firstName: firstName,
+        lastName: lastName,
+        email: normalizedEmail,
+        studentId: studentId,
+        campus: campus,
+      );
+
+      _currentUser = AppUser(
+        userId: authUser.uid,
+        firstName: firstName.trim(),
+        lastName: lastName.trim(),
+        email: normalizedEmail,
+        studentId: studentId.trim(),
+        campus: campus.trim(),
+        lockerLocation: '',
+        activeLockerId: '',
+        joinedAt: DateTime.now(),
+        role: 'student',
+      );
+
+      _firebaseLoginProfiles[normalizedEmail] = _FirebaseLoginProfile(
+        user: _currentUser!,
+        hasActiveLocker: false,
+      );
+      await _persist();
+      return null;
+    } on FirebaseAuthException catch (e) {
+      debugPrint(
+        'Firebase signup failed: code=${e.code}, message=${e.message}',
+      );
+      return _friendlyAuthError(e, duringSignUp: true);
+    } on FirebaseException catch (e, st) {
+      debugPrint(
+        'Firestore/signup pipeline failed: code=${e.code}, message=${e.message}',
+      );
+      debugPrint(st.toString());
+
+      if (e.code == 'permission-denied') {
+        return 'Firestore denied write access. Check your Firestore security rules.';
+      }
+      if (e.code == 'failed-precondition') {
+        return 'Firestore index/config is missing for locker lookup. Open the Firebase console link from browser logs and create the required index.';
+      }
+      if (e.code == 'unavailable') {
+        return 'Firestore service is unavailable right now. Please try again.';
+      }
+      return e.message ??
+          'Signup failed during database setup. Please try again.';
+    } on StateError catch (e, st) {
+      debugPrint('Signup state error: $e');
+      debugPrint(st.toString());
+      return e.message;
+    } catch (e, st) {
+      debugPrint('Unexpected signup failure: $e');
+      debugPrint(st.toString());
+      if (credentials?.user != null) {
+        try {
+          await credentials!.user!.delete();
+        } catch (_) {
+          // Ignore cleanup failures.
+        }
+      }
+      return 'Sign up failed. Please try again.';
+    } finally {
+      _setBusy(false);
+    }
+  }
+
+  bool _isAllowedSignupEmail(String normalizedEmail) {
+    return normalizedEmail.endsWith(_signupEmailDomain);
+  }
+
+  Future<String?> _loginWithFirebase({
+    required String email,
+    required String password,
+    String? lockerLocation,
+  }) async {
+    _setBusy(true);
+    try {
+      final normalizedEmail = email.trim().toLowerCase();
+      final credentials = await _auth!.signInWithEmailAndPassword(
+        email: normalizedEmail,
+        password: password,
+      );
+      final authUser = credentials.user;
+      if (authUser == null) {
+        return 'No account found yet. Create one first.';
+      }
+
+      final userDocRef = _firestore!.collection('users').doc(authUser.uid);
+      final userSnapshot = await userDocRef.get();
+      if (!userSnapshot.exists || userSnapshot.data() == null) {
+        return 'User profile not found. Contact admin.';
+      }
+
+      var data = userSnapshot.data()!;
+      final activeLockerId = (data['active_locker_id'] as String? ?? '').trim();
+
+      _currentUser = _fromFirebaseUserData(authUser.uid, data);
+      _firebaseLoginProfiles[normalizedEmail] = _FirebaseLoginProfile(
+        user: _currentUser!,
+        hasActiveLocker: activeLockerId.isNotEmpty,
+      );
+      await _persist();
+      return null;
+    } on FirebaseAuthException catch (e) {
+      debugPrint('Firebase login failed: code=${e.code}, message=${e.message}');
+      return _friendlyAuthError(e, duringSignUp: false);
+    } catch (_) {
+      return 'Login failed. Please try again.';
+    } finally {
+      _setBusy(false);
+    }
+  }
+
+  String _friendlyAuthError(
+    FirebaseAuthException e, {
+    required bool duringSignUp,
+  }) {
+    switch (e.code) {
+      case 'email-already-in-use':
+        return 'An account with this email already exists. Log in instead.';
+      case 'weak-password':
+        return 'Password is too weak. Please use at least 6 characters.';
+      case 'invalid-email':
+        return 'Please enter a valid email address.';
+      case 'user-not-found':
+      case 'wrong-password':
+      case 'invalid-credential':
+        return 'Incorrect email or password.';
+      case 'operation-not-allowed':
+        return 'Email/Password sign-in is not enabled in Firebase Authentication.';
+      case 'app-not-authorized':
+      case 'unauthorized-domain':
+        return 'This web domain is not authorized in Firebase Authentication.';
+      case 'network-request-failed':
+        return 'Network error. Check your connection and try again.';
+      case 'too-many-requests':
+        return 'Too many attempts. Please wait a moment and try again.';
+      case 'captcha-check-failed':
+        return 'reCAPTCHA verification failed. Reload the page and try again.';
+      default:
+        return e.message ??
+            (duringSignUp
+                ? 'Sign up failed. Please try again.'
+                : 'Login failed. Please try again.');
+    }
+  }
+
+  AppUser? _readFirebaseUserSync(String uid, Map<String, dynamic>? data) {
+    if (data == null) {
+      return null;
+    }
+    return _fromFirebaseUserData(uid, data);
+  }
+
+  Future<AppUser?> _readFirebaseUser(String uid) async {
+    final snapshot = await _firestore!.collection('users').doc(uid).get();
+    if (!snapshot.exists) {
+      return null;
+    }
+    return _readFirebaseUserSync(uid, snapshot.data());
+  }
+
+  AppUser _fromFirebaseUserData(String uid, Map<String, dynamic> data) {
+    final fullName = data['full_name'];
+    final fullNameMap = fullName is Map ? fullName : <String, dynamic>{};
+    final firstName =
+        fullNameMap['first_name'] as String? ??
+        data['firstName'] as String? ??
+        '';
+    final lastName =
+        fullNameMap['last_name'] as String? ??
+        data['lastName'] as String? ??
+        '';
+    final createdAt = data['created_at'];
+    final joinedAt = createdAt is Timestamp
+        ? createdAt.toDate()
+        : DateTime.tryParse(data['joinedAt'] as String? ?? '') ??
+              DateTime.now();
+
+    return AppUser(
+      userId: uid,
+      firstName: firstName,
+      lastName: lastName,
+      email: data['email'] as String? ?? '',
+      studentId:
+          data['student_number'] as String? ??
+          data['studentId'] as String? ??
+          '',
+      campus: data['campus'] as String? ?? 'T.I.P. Quezon City',
+      lockerLocation:
+          data['locker_location'] as String? ??
+          data['lockerLocation'] as String? ??
+          '',
+      activeLockerId:
+          data['active_locker_id'] as String? ??
+          data['activeLockerId'] as String? ??
+          '',
+      joinedAt: joinedAt,
+      role: data['role'] as String? ?? 'student',
+    );
+  }
+
+  Future<void> _createUserProfileInFirestore({
+    required String userId,
+    required String firstName,
+    required String lastName,
+    required String email,
+    required String studentId,
+    required String campus,
+  }) async {
+    await _firestore!.collection('users').doc(userId).set({
+      'user_id': userId,
+      'full_name': {
+        'first_name': firstName.trim(),
+        'last_name': lastName.trim(),
+      },
+      'email': email,
+      'student_number': studentId.trim(),
+      'rfid_tag': '',
+      'role': 'student',
+      'active_locker_id': '',
+      'locker_location': '',
+      'campus': campus.trim(),
+      'settings': {'autolock': true, 'duration': 30, 'notify': true},
+      'created_at': FieldValue.serverTimestamp(),
+    }, SetOptions(merge: true));
+  }
+
+  Future<bool> _assignLockerToExistingUser({
+    required String userId,
+    required String lockerId,
+  }) async {
+    final lockerRef = _firestore!.collection('lockers').doc(lockerId);
+    final userRef = _firestore.collection('users').doc(userId);
+    final assignmentRef = _firestore.collection('assignments').doc();
+
+    await _firestore.runTransaction((transaction) async {
+      final freshLocker = await transaction.get(lockerRef);
+      final lockerData = freshLocker.data();
+      final isOccupied = (lockerData?['is_occupied'] as bool?) ?? true;
+      final status = (lockerData?['status'] as String?) ?? 'broken';
+      if (isOccupied || status != 'functional') {
+        throw StateError('Selected locker is no longer available.');
+      }
+
+      final buildingNumber =
+          (lockerData?['building_number'] as num?)?.toInt() ?? 0;
+      final floor = (lockerData?['floor'] as String? ?? '').trim();
+      final lockerLocation = buildingNumber > 0 && floor.isNotEmpty
+          ? 'Building $buildingNumber, $floor'
+          : (lockerData?['location'] as String? ?? 'Assigned Locker');
+
+      transaction.update(userRef, {
+        'active_locker_id': lockerRef.id,
+        'locker_location': lockerLocation,
+      });
+
+      transaction.update(lockerRef, {
+        'is_occupied': true,
+        'current_user_id': userId,
+      });
+
+      transaction.set(assignmentRef, {
+        'user_id': userId,
+        'locker_id': lockerRef.id,
+        'semester': 'Current Term',
+        'start_date': FieldValue.serverTimestamp(),
+        'end_date': null,
+      });
+    });
+
+    return true;
+  }
+
+  void _setBusy(bool value) {
+    if (_isBusy == value) {
+      return;
+    }
+    _isBusy = value;
+    notifyListeners();
+  }
+}
+
+class _FirebaseLoginProfile {
+  const _FirebaseLoginProfile({
+    required this.user,
+    required this.hasActiveLocker,
+  });
+
+  final AppUser user;
+  final bool hasActiveLocker;
+}
+
+class LockerBuildingAvailability {
+  const LockerBuildingAvailability({
+    required this.buildingNumber,
+    required this.availableCount,
+  });
+
+  final int buildingNumber;
+  final int availableCount;
+}
+
+class LockerSlot {
+  const LockerSlot({
+    required this.lockerId,
+    required this.buildingNumber,
+    required this.floor,
+    required this.floorCode,
+    required this.lockerNumber,
+    required this.isOccupied,
+    required this.status,
+  });
+
+  final String lockerId;
+  final int buildingNumber;
+  final String floor;
+  final String floorCode;
+  final int lockerNumber;
+  final bool isOccupied;
+  final String status;
+
+  factory LockerSlot.fromFirestore(String docId, Map<String, dynamic> data) {
+    return LockerSlot(
+      lockerId: data['locker_id'] as String? ?? docId,
+      buildingNumber: (data['building_number'] as num?)?.toInt() ?? 0,
+      floor: data['floor'] as String? ?? 'Ground Floor',
+      floorCode: data['floor_code'] as String? ?? 'G',
+      lockerNumber: (data['locker_slot'] as num?)?.toInt() ?? 0,
+      isOccupied: data['is_occupied'] as bool? ?? false,
+      status: data['status'] as String? ?? 'functional',
+    );
+  }
+}
+
+class LockerLogEntry {
+  const LockerLogEntry({
+    required this.id,
+    required this.userId,
+    required this.lockerId,
+    required this.eventType,
+    required this.authMethod,
+    required this.source,
+    required this.status,
+    required this.details,
+    required this.occurredAt,
+    required this.metadata,
+  });
+
+  final String id;
+  final String userId;
+  final String lockerId;
+  final String eventType;
+  final String authMethod;
+  final String source;
+  final String status;
+  final String details;
+  final DateTime occurredAt;
+  final Map<String, dynamic> metadata;
+
+  factory LockerLogEntry.fromFirestore(
+    String docId,
+    Map<String, dynamic> data, {
+    bool hasPendingWrites = false,
+  }) {
+    final timestamp = data['timestamp'];
+    final createdAt = data['created_at'];
+    final clientTimestamp = data['client_timestamp'];
+    DateTime when;
+    if (timestamp is Timestamp) {
+      when = timestamp.toDate();
+    } else if (createdAt is Timestamp) {
+      when = createdAt.toDate();
+    } else if (clientTimestamp is Timestamp) {
+      when = clientTimestamp.toDate();
+    } else if (hasPendingWrites) {
+      when = DateTime.now();
+    } else {
+      when = DateTime.fromMillisecondsSinceEpoch(0);
+    }
+
+    final rawMetadata = data['metadata'];
+    final metadata = rawMetadata is Map
+        ? rawMetadata.map((key, value) => MapEntry(key.toString(), value))
+        : <String, dynamic>{};
+
+    return LockerLogEntry(
+      id: docId,
+      userId: data['user_id'] as String? ?? '',
+      lockerId: data['locker_id'] as String? ?? '',
+      eventType: data['event_type'] as String? ?? 'UNKNOWN',
+      authMethod: data['auth_method'] as String? ?? 'Unknown',
+      source: data['source'] as String? ?? 'unknown',
+      status: data['status'] as String? ?? 'recorded',
+      details: data['details'] as String? ?? '',
+      occurredAt: when,
+      metadata: metadata,
+    );
+  }
+}
+
+class _StoredAccount {
+  const _StoredAccount({required this.user, required this.password});
+
+  final AppUser user;
+  final String password;
+
+  Map<String, dynamic> toJson() => {
+    'user': user.toJson(),
+    'password': password,
+  };
+
+  factory _StoredAccount.fromJson(Map<String, dynamic> json) {
+    final userJson = json['user'];
+    return _StoredAccount(
+      user: AppUser.fromJson(
+        userJson is Map<String, dynamic>
+            ? userJson
+            : (userJson as Map).map(
+                (key, value) => MapEntry(key.toString(), value),
+              ),
+      ),
+      password: json['password'] as String? ?? '',
+    );
+  }
+}
