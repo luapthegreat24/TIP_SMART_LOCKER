@@ -2,14 +2,8 @@ import 'package:flutter/material.dart';
 
 import '../core/auth_controller.dart';
 import '../core/design_tokens.dart';
-
-typedef LayeredPanelBuilder =
-    Widget Function({
-      required Widget child,
-      required Color color,
-      double radius,
-      double shadowOffset,
-    });
+import '../widgets/layered_panel.dart';
+import '../widgets/top_back_button.dart';
 
 class ProfileScreen extends StatelessWidget {
   final LayeredPanelBuilder layeredPanel;
@@ -66,7 +60,7 @@ class ProfileScreen extends StatelessWidget {
                   children: [
                     Row(
                       children: [
-                        _TopBackButton(onTap: onBack),
+                        TopBackButton(onTap: onBack),
                         const SizedBox(width: T.gap12),
                         const Text(
                           'PROFILE',
@@ -361,37 +355,6 @@ class ProfileScreen extends StatelessWidget {
   }
 }
 
-class _TopBackButton extends StatelessWidget {
-  final VoidCallback onTap;
-
-  const _TopBackButton({required this.onTap});
-
-  @override
-  Widget build(BuildContext context) {
-    return GestureDetector(
-      onTap: onTap,
-      behavior: HitTestBehavior.opaque,
-      child: Container(
-        width: 38,
-        height: 38,
-        decoration: BoxDecoration(
-          color: T.surface,
-          borderRadius: BorderRadius.circular(T.r12),
-          border: Border.all(color: T.border, width: T.strokeSm),
-          boxShadow: const [
-            BoxShadow(color: T.shadow, offset: Offset(2, 2), blurRadius: 4),
-          ],
-        ),
-        child: const Icon(
-          Icons.arrow_back_rounded,
-          color: T.textPrimary,
-          size: 18,
-        ),
-      ),
-    );
-  }
-}
-
 class _InfoRow extends StatelessWidget {
   final IconData icon;
   final String label;
@@ -406,42 +369,56 @@ class _InfoRow extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: T.gap16, vertical: 11),
-      child: Row(
-        children: [
-          Container(
-            width: 30,
-            height: 30,
-            decoration: BoxDecoration(
-              color: T.surfaceAlt,
-              borderRadius: BorderRadius.circular(T.r8),
-              border: Border.all(color: T.border, width: T.strokeSm),
+      padding: const EdgeInsets.symmetric(horizontal: T.gap16, vertical: 8),
+      child: SizedBox(
+        height: 38,
+        child: Row(
+          children: [
+            Container(
+              width: 30,
+              height: 30,
+              decoration: BoxDecoration(
+                color: T.surfaceAlt,
+                borderRadius: BorderRadius.circular(T.r8),
+                border: Border.all(color: T.border, width: T.strokeSm),
+              ),
+              child: Icon(icon, size: 16, color: T.textSecondary),
             ),
-            child: Icon(icon, size: 16, color: T.textSecondary),
-          ),
-          const SizedBox(width: T.gap12),
-          Text(
-            label,
-            style: const TextStyle(
-              fontSize: 13,
-              fontWeight: FontWeight.w500,
-              color: T.textSecondary,
-            ),
-          ),
-          const Spacer(),
-          Flexible(
-            child: Text(
-              value,
-              textAlign: TextAlign.right,
-              overflow: TextOverflow.ellipsis,
-              style: const TextStyle(
-                fontSize: 13,
-                fontWeight: FontWeight.w600,
-                color: T.textPrimary,
+            const SizedBox(width: T.gap12),
+            Expanded(
+              flex: 4,
+              child: Align(
+                alignment: Alignment.centerLeft,
+                child: Text(
+                  label,
+                  style: const TextStyle(
+                    fontSize: 13,
+                    fontWeight: FontWeight.w500,
+                    color: T.textSecondary,
+                  ),
+                ),
               ),
             ),
-          ),
-        ],
+            const SizedBox(width: T.gap12),
+            Expanded(
+              flex: 5,
+              child: Align(
+                alignment: Alignment.centerRight,
+                child: Text(
+                  value,
+                  maxLines: 1,
+                  textAlign: TextAlign.right,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(
+                    fontSize: 13,
+                    fontWeight: FontWeight.w600,
+                    color: T.textPrimary,
+                  ),
+                ),
+              ),
+            ),
+          ],
+        ),
       ),
     );
   }

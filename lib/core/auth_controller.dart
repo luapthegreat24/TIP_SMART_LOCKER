@@ -111,6 +111,14 @@ class AppUser {
 
 class AuthController extends ChangeNotifier {
   static const String _signupEmailDomain = '@tip.edu.ph';
+  static const int _failedLoginThreshold = 3;
+  static const Duration _failedLoginWindow = Duration(minutes: 10);
+  static const Duration _temporaryLockoutDuration = Duration(minutes: 1);
+  static const String _usersCollection = 'users';
+  static const String _lockersCollection = 'lockers';
+  static const String _logsCollection = 'logs';
+  static const String _assignmentsCollection = 'assignments';
+  static const String _authSecurityAuditCollection = 'auth_security_audit';
 
   AuthController({required AuthLocalStore store})
     : _store = store,
@@ -131,6 +139,10 @@ class AuthController extends ChangeNotifier {
 
   final Map<String, _StoredAccount> _accounts = {};
   final Map<String, _FirebaseLoginProfile> _firebaseLoginProfiles = {};
+  final Map<String, List<DateTime>> _failedLoginAttemptsByEmail = {};
+  final Map<String, DateTime> _loginLockoutUntilByEmail = {};
+  final Map<String, List<_PendingAuthLogEvent>> _pendingAuthLogsByEmail = {};
+  Timer? _lockoutTicker;
   AppUser? _currentUser;
   bool _isReady = false;
   bool _isBusy = false;
@@ -256,11 +268,19 @@ class AuthController extends ChangeNotifier {
   }
 
   Stream<List<LockerBuildingAvailability>> watchBuildingAvailability() {
-    return _firestore!
-        .collection('lockers')
+    final firestore = _firestore;
+    if (!_useFirebase || firestore == null) {
+      return const Stream<List<LockerBuildingAvailability>>.empty();
+    }
+
+    return firestore
+        .collection(_lockersCollection)
         .where('status', isEqualTo: 'functional')
         .where('is_occupied', isEqualTo: false)
         .snapshots()
+        .handleError((error, stack) {
+          debugPrint('watchBuildingAvailability stream error: $error');
+        })
         .map((snapshot) {
           final counts = <int, int>{};
           for (final doc in snapshot.docs) {
@@ -291,13 +311,21 @@ class AuthController extends ChangeNotifier {
     required int buildingNumber,
     required String floor,
   }) {
-    return _firestore!
-        .collection('lockers')
+    final firestore = _firestore;
+    if (!_useFirebase || firestore == null) {
+      return const Stream<List<LockerSlot>>.empty();
+    }
+
+    return firestore
+        .collection(_lockersCollection)
         .where('building_number', isEqualTo: buildingNumber)
         .where('floor', isEqualTo: floor)
         .where('status', isEqualTo: 'functional')
         .where('is_occupied', isEqualTo: false)
         .snapshots()
+        .handleError((error, stack) {
+          debugPrint('watchAvailableLockers stream error: $error');
+        })
         .map((snapshot) {
           final slots =
               snapshot.docs
@@ -311,12 +339,20 @@ class AuthController extends ChangeNotifier {
   Stream<Map<String, int>> watchFloorAvailability({
     required int buildingNumber,
   }) {
-    return _firestore!
-        .collection('lockers')
+    final firestore = _firestore;
+    if (!_useFirebase || firestore == null) {
+      return const Stream<Map<String, int>>.empty();
+    }
+
+    return firestore
+        .collection(_lockersCollection)
         .where('building_number', isEqualTo: buildingNumber)
         .where('status', isEqualTo: 'functional')
         .where('is_occupied', isEqualTo: false)
         .snapshots()
+        .handleError((error, stack) {
+          debugPrint('watchFloorAvailability stream error: $error');
+        })
         .map((snapshot) {
           final floorCounts = <String, int>{'Ground Floor': 0, '2nd Floor': 0};
           for (final doc in snapshot.docs) {
@@ -358,6 +394,16 @@ class AuthController extends ChangeNotifier {
         user: refreshed,
         hasActiveLocker: refreshed.activeLockerId.isNotEmpty,
       );
+      await _logAuthEvent(
+        email: refreshed.email,
+        userId: refreshed.userId,
+        lockerId: refreshed.activeLockerId,
+        eventType: 'ASSIGNED',
+        status: 'success',
+        details: 'Locker assigned to user profile.',
+        source: 'locker_assignment',
+        metadata: {'locker_location': refreshed.lockerLocation},
+      );
       notifyListeners();
       return null;
     } on FirebaseException catch (e) {
@@ -374,31 +420,84 @@ class AuthController extends ChangeNotifier {
 
   Stream<List<LockerLogEntry>> watchLogsForUser({
     required String userId,
+    String? email,
     int limit = 200,
   }) {
-    if (!_useFirebase || userId.trim().isEmpty) {
+    final firestore = _firestore;
+    if (!_useFirebase || userId.trim().isEmpty || firestore == null) {
       return const Stream<List<LockerLogEntry>>.empty();
     }
 
-    return _firestore!
-        .collection('logs')
+    final normalizedEmail = email?.trim().toLowerCase() ?? '';
+    final userLogs = firestore
+        .collection(_logsCollection)
         .where('user_id', isEqualTo: userId)
         .limit(limit)
+        .snapshots();
+
+    if (normalizedEmail.isEmpty) {
+      return userLogs
+          .handleError((error, stack) {
+            debugPrint('watchLogsForUser stream error: $error');
+          })
+          .map(_mapLogSnapshot);
+    }
+
+    final emailLogs = firestore
+        .collection(_logsCollection)
+        .where('metadata.email', isEqualTo: normalizedEmail)
+        .limit(limit)
         .snapshots()
-        .map((snapshot) {
-          final items =
-              snapshot.docs
-                  .map(
-                    (doc) => LockerLogEntry.fromFirestore(
-                      doc.id,
-                      doc.data(),
-                      hasPendingWrites: doc.metadata.hasPendingWrites,
-                    ),
-                  )
-                  .toList(growable: false)
-                ..sort((a, b) => b.occurredAt.compareTo(a.occurredAt));
-          return items;
+        .handleError((error, stack) {
+          debugPrint('watchLogsForUser email stream error: $error');
         });
+
+    return Stream<List<LockerLogEntry>>.multi((controller) {
+      var userItems = <LockerLogEntry>[];
+      var emailItems = <LockerLogEntry>[];
+
+      void emitMerged() {
+        final merged = <String, LockerLogEntry>{
+          for (final item in userItems) item.id: item,
+          for (final item in emailItems) item.id: item,
+        };
+        final values = merged.values.toList(growable: false)
+          ..sort((a, b) => b.occurredAt.compareTo(a.occurredAt));
+        controller.add(values);
+      }
+
+      final userSub = userLogs.listen((snapshot) {
+        userItems = _mapLogSnapshot(snapshot);
+        emitMerged();
+      }, onError: controller.addError);
+
+      final emailSub = emailLogs.listen((snapshot) {
+        emailItems = _mapLogSnapshot(snapshot);
+        emitMerged();
+      }, onError: controller.addError);
+
+      controller.onCancel = () async {
+        await userSub.cancel();
+        await emailSub.cancel();
+      };
+    });
+  }
+
+  List<LockerLogEntry> _mapLogSnapshot(
+    QuerySnapshot<Map<String, dynamic>> snapshot,
+  ) {
+    final items =
+        snapshot.docs
+            .map(
+              (doc) => LockerLogEntry.fromFirestore(
+                doc.id,
+                doc.data(),
+                hasPendingWrites: doc.metadata.hasPendingWrites,
+              ),
+            )
+            .toList(growable: false)
+          ..sort((a, b) => b.occurredAt.compareTo(a.occurredAt));
+    return items;
   }
 
   Future<void> addLogEvent({
@@ -415,23 +514,37 @@ class AuthController extends ChangeNotifier {
       return;
     }
 
-    final serverNow = FieldValue.serverTimestamp();
-    await _firestore!.collection('logs').add({
-      'user_id': userId,
-      'locker_id': lockerId,
-      'event_type': eventType,
-      'auth_method': authMethod,
-      'source': source,
-      'status': status,
-      'details': details ?? '',
-      'timestamp': serverNow,
-      // New canonical field for future queries while preserving legacy support.
-      'created_at': serverNow,
-      // Ensures deterministic ordering for local pending writes before
-      // Firestore resolves server timestamps.
-      'client_timestamp': Timestamp.now(),
-      if (metadata != null && metadata.isNotEmpty) 'metadata': metadata,
-    });
+    final firestore = _firestore;
+    if (firestore == null) {
+      debugPrint('addLogEvent skipped: Firestore is not ready.');
+      return;
+    }
+
+    try {
+      final serverNow = FieldValue.serverTimestamp();
+      await firestore.collection(_logsCollection).add({
+        'user_id': userId,
+        'locker_id': lockerId,
+        'event_type': eventType.trim().isEmpty ? 'UNKNOWN' : eventType,
+        'auth_method': authMethod.trim().isEmpty ? 'Unknown' : authMethod,
+        'source': source,
+        'status': status,
+        'details': details ?? '',
+        'timestamp': serverNow,
+        // New canonical field for future queries while preserving legacy support.
+        'created_at': serverNow,
+        // Ensures deterministic ordering for local pending writes before
+        // Firestore resolves server timestamps.
+        'client_timestamp': Timestamp.now(),
+        if (metadata != null && metadata.isNotEmpty) 'metadata': metadata,
+      });
+    } on FirebaseException catch (e, st) {
+      debugPrint('addLogEvent failed: code=${e.code}, message=${e.message}');
+      debugPrint(st.toString());
+    } catch (e, st) {
+      debugPrint('addLogEvent unexpected failure: $e');
+      debugPrint(st.toString());
+    }
   }
 
   bool get isAuthenticated => _currentUser != null;
@@ -553,9 +666,28 @@ class AuthController extends ChangeNotifier {
     required String password,
     String? lockerLocation,
   }) async {
+    final normalizedEmail = email.trim().toLowerCase();
+    final lockoutMessage = _lockoutMessageForEmail(normalizedEmail);
+    if (lockoutMessage != null) {
+      unawaited(
+        _logAuthEvent(
+          email: normalizedEmail,
+          eventType: 'LOGIN_BLOCKED',
+          status: 'blocked',
+          details: 'Login blocked due to temporary lockout.',
+          metadata: {
+            'reason': 'temporary_lockout',
+            'lockout_until': _loginLockoutUntilByEmail[normalizedEmail]
+                ?.toIso8601String(),
+          },
+        ),
+      );
+      return lockoutMessage;
+    }
+
     if (_useFirebase) {
       return _loginWithFirebase(
-        email: email,
+        email: normalizedEmail,
         password: password,
         lockerLocation: lockerLocation,
       );
@@ -567,14 +699,32 @@ class AuthController extends ChangeNotifier {
 
     _setBusy(true);
     try {
-      final normalizedEmail = email.trim().toLowerCase();
       final account = _accounts[normalizedEmail];
       if (account == null || account.password != password) {
-        return 'Incorrect email or password.';
+        final attempts = await _registerFailedLoginAttempt(
+          email: normalizedEmail,
+          reason: 'Invalid email or password for local account login.',
+          source: 'local_auth',
+        );
+        final lockoutMessage = _lockoutMessageForEmail(normalizedEmail);
+        if (lockoutMessage != null) {
+          return lockoutMessage;
+        }
+        return 'Incorrect email or password. Attempt $attempts of $_failedLoginThreshold.';
       }
 
       _currentUser = account.user;
+      _resetFailedLoginState(normalizedEmail);
       await _persist();
+      await _logAuthEvent(
+        email: normalizedEmail,
+        userId: account.user.userId,
+        lockerId: account.user.activeLockerId,
+        eventType: 'LOGIN_SUCCESS',
+        status: 'success',
+        details: 'User logged in successfully.',
+        source: 'local_auth',
+      );
       return null;
     } finally {
       _setBusy(false);
@@ -585,6 +735,17 @@ class AuthController extends ChangeNotifier {
     if (_useFirebase) {
       _setBusy(true);
       try {
+        final user = _currentUser;
+        if (user != null) {
+          await _logAuthEvent(
+            email: user.email,
+            userId: user.userId,
+            lockerId: user.activeLockerId,
+            eventType: 'LOGOUT',
+            status: 'success',
+            details: 'User logged out from mobile app.',
+          );
+        }
         await _auth!.signOut();
         _currentUser = null;
       } finally {
@@ -665,7 +826,10 @@ class AuthController extends ChangeNotifier {
   Future<void> _loadFirebaseLoginProfiles() async {
     _firebaseLoginProfiles.clear();
     try {
-      final snapshot = await _firestore!.collection('users').limit(200).get();
+      final snapshot = await _firestore!
+          .collection(_usersCollection)
+          .limit(200)
+          .get();
       for (final doc in snapshot.docs) {
         final data = doc.data();
         final email = (data['email'] as String? ?? '').trim().toLowerCase();
@@ -733,6 +897,13 @@ class AuthController extends ChangeNotifier {
         user: _currentUser!,
         hasActiveLocker: false,
       );
+      await _logAuthEvent(
+        email: normalizedEmail,
+        userId: authUser.uid,
+        eventType: 'SIGNUP_SUCCESS',
+        status: 'success',
+        details: 'New account created successfully.',
+      );
       await _persist();
       return null;
     } on FirebaseAuthException catch (e) {
@@ -798,9 +969,18 @@ class AuthController extends ChangeNotifier {
         return 'No account found yet. Create one first.';
       }
 
-      final userDocRef = _firestore!.collection('users').doc(authUser.uid);
+      final firestore = _firestore;
+      if (firestore == null) {
+        await _safeFirebaseSignOut();
+        return 'Authentication service is not ready. Please try again.';
+      }
+
+      final userDocRef = firestore
+          .collection(_usersCollection)
+          .doc(authUser.uid);
       final userSnapshot = await userDocRef.get();
       if (!userSnapshot.exists || userSnapshot.data() == null) {
+        await _safeFirebaseSignOut();
         return 'User profile not found. Contact admin.';
       }
 
@@ -812,15 +992,91 @@ class AuthController extends ChangeNotifier {
         user: _currentUser!,
         hasActiveLocker: activeLockerId.isNotEmpty,
       );
+      await _flushPendingAuthEventsForEmail(
+        normalizedEmail: normalizedEmail,
+        userId: authUser.uid,
+        lockerId: _currentUser!.activeLockerId,
+      );
+      _resetFailedLoginState(normalizedEmail);
+      await _logAuthEvent(
+        email: normalizedEmail,
+        userId: authUser.uid,
+        lockerId: _currentUser!.activeLockerId,
+        eventType: 'LOGIN_SUCCESS',
+        status: 'success',
+        details: 'User logged in successfully.',
+      );
       await _persist();
       return null;
     } on FirebaseAuthException catch (e) {
-      debugPrint('Firebase login failed: code=${e.code}, message=${e.message}');
-      return _friendlyAuthError(e, duringSignUp: false);
-    } catch (_) {
-      return 'Login failed. Please try again.';
+      if (!_isExpectedCredentialFailure(e.code)) {
+        debugPrint(
+          'Firebase login failed: code=${e.code}, message=${e.message}',
+        );
+      }
+      final attempts = await _registerFailedLoginAttempt(
+        email: email.trim().toLowerCase(),
+        reason: 'Firebase login rejected: ${e.code}',
+        source: 'firebase_auth',
+        authErrorCode: e.code,
+      );
+      final lockoutMessage = _lockoutMessageForEmail(
+        email.trim().toLowerCase(),
+      );
+      if (lockoutMessage != null) {
+        return lockoutMessage;
+      }
+      return '${_friendlyAuthError(e, duringSignUp: false)} (Attempt $attempts of $_failedLoginThreshold)';
+    } on FirebaseException catch (e, st) {
+      debugPrint(
+        'Firestore read during login failed: code=${e.code}, message=${e.message}',
+      );
+      debugPrint(st.toString());
+      await _safeFirebaseSignOut();
+
+      if (e.code == 'permission-denied') {
+        return 'Firestore denied access to your profile. Check Firestore security rules.';
+      }
+      if (e.code == 'unavailable') {
+        return 'Firestore is currently unavailable. Please try again.';
+      }
+      if (e.code == 'failed-precondition') {
+        return 'Firestore query/index configuration is incomplete. Please configure required indexes and retry.';
+      }
+
+      return e.message ??
+          'Unable to load your profile right now. Please try again.';
+    } catch (e, st) {
+      debugPrint('Unexpected login failure: $e');
+      debugPrint(st.toString());
+      final attempts = await _registerFailedLoginAttempt(
+        email: email.trim().toLowerCase(),
+        reason: 'Unexpected login error.',
+        source: 'firebase_auth',
+      );
+      final lockoutMessage = _lockoutMessageForEmail(
+        email.trim().toLowerCase(),
+      );
+      if (lockoutMessage != null) {
+        return lockoutMessage;
+      }
+      return 'Login failed. Please try again. Attempt $attempts of $_failedLoginThreshold.';
     } finally {
       _setBusy(false);
+    }
+  }
+
+  bool _isExpectedCredentialFailure(String code) {
+    return code == 'user-not-found' ||
+        code == 'wrong-password' ||
+        code == 'invalid-credential';
+  }
+
+  Future<void> _safeFirebaseSignOut() async {
+    try {
+      await _auth?.signOut();
+    } catch (_) {
+      // Ignore cleanup failures.
     }
   }
 
@@ -866,7 +1122,10 @@ class AuthController extends ChangeNotifier {
   }
 
   Future<AppUser?> _readFirebaseUser(String uid) async {
-    final snapshot = await _firestore!.collection('users').doc(uid).get();
+    final snapshot = await _firestore!
+        .collection(_usersCollection)
+        .doc(uid)
+        .get();
     if (!snapshot.exists) {
       return null;
     }
@@ -921,7 +1180,7 @@ class AuthController extends ChangeNotifier {
     required String studentId,
     required String campus,
   }) async {
-    await _firestore!.collection('users').doc(userId).set({
+    await _firestore!.collection(_usersCollection).doc(userId).set({
       'user_id': userId,
       'full_name': {
         'first_name': firstName.trim(),
@@ -943,17 +1202,41 @@ class AuthController extends ChangeNotifier {
     required String userId,
     required String lockerId,
   }) async {
-    final lockerRef = _firestore!.collection('lockers').doc(lockerId);
-    final userRef = _firestore.collection('users').doc(userId);
-    final assignmentRef = _firestore.collection('assignments').doc();
+    final lockerRef = _firestore!.collection(_lockersCollection).doc(lockerId);
+    final userRef = _firestore.collection(_usersCollection).doc(userId);
+    final assignmentRef = _firestore.collection(_assignmentsCollection).doc();
 
     await _firestore.runTransaction((transaction) async {
+      final userSnapshot = await transaction.get(userRef);
+      final userData = userSnapshot.data();
+      final previousLockerId = (userData?['active_locker_id'] as String? ?? '')
+          .trim();
+
       final freshLocker = await transaction.get(lockerRef);
       final lockerData = freshLocker.data();
       final isOccupied = (lockerData?['is_occupied'] as bool?) ?? true;
       final status = (lockerData?['status'] as String?) ?? 'broken';
-      if (isOccupied || status != 'functional') {
+      final occupiedBy = (lockerData?['current_user_id'] as String? ?? '')
+          .trim();
+      final occupiedByDifferentUser = isOccupied && occupiedBy != userId;
+      if (occupiedByDifferentUser || status != 'functional') {
         throw StateError('Selected locker is no longer available.');
+      }
+
+      if (previousLockerId.isNotEmpty && previousLockerId != lockerRef.id) {
+        final previousLockerRef = _firestore
+            .collection(_lockersCollection)
+            .doc(previousLockerId);
+        final previousLockerSnapshot = await transaction.get(previousLockerRef);
+        final previousLockerData = previousLockerSnapshot.data();
+        final previousCurrentUser =
+            (previousLockerData?['current_user_id'] as String? ?? '').trim();
+        if (previousLockerSnapshot.exists && previousCurrentUser == userId) {
+          transaction.update(previousLockerRef, {
+            'is_occupied': false,
+            'current_user_id': '',
+          });
+        }
       }
 
       final buildingNumber =
@@ -985,12 +1268,428 @@ class AuthController extends ChangeNotifier {
     return true;
   }
 
+  Future<void> logSettingChange({
+    required String settingKey,
+    required Object previousValue,
+    required Object newValue,
+    String source = 'settings_screen',
+  }) async {
+    final user = _currentUser;
+    if (user == null) {
+      return;
+    }
+
+    await addLogEvent(
+      userId: user.userId,
+      lockerId: user.activeLockerId,
+      eventType: 'SETTING_CHANGED',
+      authMethod: 'Mobile App',
+      source: source,
+      status: 'success',
+      details: '$settingKey changed from $previousValue to $newValue.',
+      metadata: {
+        'setting_key': settingKey,
+        'previous_value': previousValue.toString(),
+        'new_value': newValue.toString(),
+      },
+    );
+  }
+
+  String? lockoutMessageForEmail(String email) {
+    final normalizedEmail = email.trim().toLowerCase();
+    return _lockoutMessageForEmail(normalizedEmail);
+  }
+
+  int failedAttemptsForEmail(String email) {
+    final normalizedEmail = email.trim().toLowerCase();
+    final attempts = _failedLoginAttemptsByEmail[normalizedEmail];
+    if (attempts == null || attempts.isEmpty) {
+      return 0;
+    }
+    final now = DateTime.now();
+    attempts.removeWhere(
+      (timestamp) => now.difference(timestamp) > _failedLoginWindow,
+    );
+    return attempts.length;
+  }
+
+  String? _lockoutMessageForEmail(String normalizedEmail) {
+    final until = _loginLockoutUntilByEmail[normalizedEmail];
+    if (until == null) {
+      return null;
+    }
+
+    if (DateTime.now().isAfter(until)) {
+      _loginLockoutUntilByEmail.remove(normalizedEmail);
+      _stopLockoutTickerIfIdle();
+      return null;
+    }
+
+    final remaining = until.difference(DateTime.now());
+    final minutes = remaining.inMinutes;
+    final seconds = remaining.inSeconds % 60;
+    if (minutes > 0) {
+      return 'Too many failed attempts. Try again in ${minutes}m ${seconds}s.';
+    }
+    return 'Too many failed attempts. Try again in ${remaining.inSeconds}s.';
+  }
+
+  void _resetFailedLoginState(String normalizedEmail) {
+    _failedLoginAttemptsByEmail.remove(normalizedEmail);
+    _loginLockoutUntilByEmail.remove(normalizedEmail);
+    _stopLockoutTickerIfIdle();
+  }
+
+  Future<int> _registerFailedLoginAttempt({
+    required String email,
+    required String reason,
+    required String source,
+    String? authErrorCode,
+  }) async {
+    final normalizedEmail = email.trim().toLowerCase();
+    if (normalizedEmail.isEmpty) {
+      return 0;
+    }
+
+    final now = DateTime.now();
+    final attempts = _failedLoginAttemptsByEmail.putIfAbsent(
+      normalizedEmail,
+      () => <DateTime>[],
+    );
+    attempts.removeWhere(
+      (timestamp) => now.difference(timestamp) > _failedLoginWindow,
+    );
+    attempts.add(now);
+
+    final userId = await _resolveUserIdForEmail(normalizedEmail);
+    final lockerId = _resolveLockerIdForEmail(normalizedEmail);
+
+    await _logAuthEvent(
+      email: normalizedEmail,
+      userId: userId,
+      lockerId: lockerId,
+      eventType: 'LOGIN_FAILED',
+      status: 'failed',
+      details: reason,
+      source: source,
+      metadata: {
+        'failed_attempt_count_window': attempts.length,
+        'window_seconds': _failedLoginWindow.inSeconds,
+        if (authErrorCode != null) 'auth_error_code': authErrorCode,
+      },
+    );
+
+    if (attempts.length >= _failedLoginThreshold) {
+      final lockoutUntil = now.add(_temporaryLockoutDuration);
+      _loginLockoutUntilByEmail[normalizedEmail] = lockoutUntil;
+      _ensureLockoutTicker();
+
+      await _logAuthEvent(
+        email: normalizedEmail,
+        userId: userId,
+        lockerId: lockerId,
+        eventType: 'AUTH_SECURITY_ALERT',
+        status: 'alert',
+        details:
+            'Security alert triggered due to repeated failed login attempts.',
+        source: source,
+        metadata: {
+          'failed_attempt_count_window': attempts.length,
+          'threshold': _failedLoginThreshold,
+          'window_seconds': _failedLoginWindow.inSeconds,
+          'lockout_seconds': _temporaryLockoutDuration.inSeconds,
+          'lockout_until': lockoutUntil.toIso8601String(),
+          'alert_type': 'FAILED_LOGIN_THRESHOLD',
+        },
+      );
+    }
+
+    return attempts.length;
+  }
+
+  void _ensureLockoutTicker() {
+    if (_lockoutTicker != null) {
+      return;
+    }
+    _lockoutTicker = Timer.periodic(const Duration(seconds: 1), (_) {
+      var changed = false;
+      final now = DateTime.now();
+
+      final expired = <String>[];
+      for (final entry in _loginLockoutUntilByEmail.entries) {
+        if (now.isAfter(entry.value)) {
+          expired.add(entry.key);
+        }
+      }
+
+      if (expired.isNotEmpty) {
+        for (final key in expired) {
+          _loginLockoutUntilByEmail.remove(key);
+          _failedLoginAttemptsByEmail.remove(key);
+        }
+        changed = true;
+      }
+
+      if (_loginLockoutUntilByEmail.isEmpty) {
+        _stopLockoutTickerIfIdle();
+      }
+
+      if (changed || _loginLockoutUntilByEmail.isNotEmpty) {
+        notifyListeners();
+      }
+    });
+  }
+
+  void _stopLockoutTickerIfIdle() {
+    if (_loginLockoutUntilByEmail.isNotEmpty) {
+      return;
+    }
+    _lockoutTicker?.cancel();
+    _lockoutTicker = null;
+  }
+
+  Future<void> _logAuthEvent({
+    required String email,
+    required String eventType,
+    required String status,
+    required String details,
+    String source = 'auth_controller',
+    String? userId,
+    String? lockerId,
+    Map<String, dynamic>? metadata,
+  }) async {
+    if (!_useFirebase) {
+      return;
+    }
+
+    final resolvedUserId = (userId == null || userId.trim().isEmpty)
+        ? await _resolveUserIdForEmail(email)
+        : userId.trim();
+    if (resolvedUserId.isEmpty) {
+      final wroteUnresolved = await _writeUnresolvedAuthLogToPrimaryLogs(
+        email: email,
+        eventType: eventType,
+        status: status,
+        details: details,
+        source: source,
+        metadata: metadata,
+      );
+      if (!wroteUnresolved) {
+        _queuePendingAuthEvent(
+          email: email,
+          eventType: eventType,
+          status: status,
+          details: details,
+          source: source,
+          metadata: metadata,
+        );
+      }
+      await _writeSecurityAuditFallback(
+        email: email,
+        eventType: eventType,
+        status: status,
+        details: details,
+        source: source,
+        metadata: metadata,
+      );
+      return;
+    }
+
+    await addLogEvent(
+      userId: resolvedUserId,
+      lockerId: (lockerId ?? _resolveLockerIdForEmail(email)).trim(),
+      eventType: eventType,
+      authMethod: 'Mobile App',
+      source: source,
+      status: status,
+      details: details,
+      metadata: {'email': email, if (metadata != null) ...metadata},
+    );
+  }
+
+  Future<bool> _writeUnresolvedAuthLogToPrimaryLogs({
+    required String email,
+    required String eventType,
+    required String status,
+    required String details,
+    required String source,
+    Map<String, dynamic>? metadata,
+  }) async {
+    final firestore = _firestore;
+    if (!_useFirebase || firestore == null) {
+      return false;
+    }
+
+    try {
+      final now = FieldValue.serverTimestamp();
+      await firestore.collection(_logsCollection).add({
+        'user_id': '__unresolved__',
+        'locker_id': '',
+        'event_type': eventType,
+        'auth_method': 'Mobile App',
+        'source': source,
+        'status': status,
+        'details': details,
+        'timestamp': now,
+        'created_at': now,
+        'client_timestamp': Timestamp.now(),
+        'metadata': {
+          'email': email.trim().toLowerCase(),
+          'unresolved_user': true,
+          if (metadata != null) ...metadata,
+        },
+      });
+      return true;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  void _queuePendingAuthEvent({
+    required String email,
+    required String eventType,
+    required String status,
+    required String details,
+    required String source,
+    Map<String, dynamic>? metadata,
+  }) {
+    final normalizedEmail = email.trim().toLowerCase();
+    if (normalizedEmail.isEmpty) {
+      return;
+    }
+
+    final queue = _pendingAuthLogsByEmail.putIfAbsent(
+      normalizedEmail,
+      () => <_PendingAuthLogEvent>[],
+    );
+    queue.add(
+      _PendingAuthLogEvent(
+        eventType: eventType,
+        status: status,
+        details: details,
+        source: source,
+        metadata: metadata,
+        createdAt: DateTime.now(),
+      ),
+    );
+  }
+
+  Future<void> _flushPendingAuthEventsForEmail({
+    required String normalizedEmail,
+    required String userId,
+    required String lockerId,
+  }) async {
+    if (!_useFirebase || userId.trim().isEmpty) {
+      return;
+    }
+
+    final pending = _pendingAuthLogsByEmail.remove(normalizedEmail);
+    if (pending == null || pending.isEmpty) {
+      return;
+    }
+
+    for (final event in pending) {
+      await addLogEvent(
+        userId: userId,
+        lockerId: lockerId,
+        eventType: event.eventType,
+        authMethod: 'Mobile App',
+        source: event.source,
+        status: event.status,
+        details: event.details,
+        metadata: {
+          'email': normalizedEmail,
+          'queued_before_user_resolution': true,
+          'queued_at': event.createdAt.toIso8601String(),
+          if (event.metadata != null) ...event.metadata!,
+        },
+      );
+    }
+  }
+
+  Future<void> _writeSecurityAuditFallback({
+    required String email,
+    required String eventType,
+    required String status,
+    required String details,
+    required String source,
+    Map<String, dynamic>? metadata,
+  }) async {
+    if (!_useFirebase) {
+      return;
+    }
+
+    try {
+      await _firestore!.collection(_authSecurityAuditCollection).add({
+        'email': email,
+        'event_type': eventType,
+        'status': status,
+        'details': details,
+        'source': source,
+        'timestamp': FieldValue.serverTimestamp(),
+        'client_timestamp': Timestamp.now(),
+        if (metadata?.isNotEmpty ?? false) 'metadata': metadata,
+      });
+    } catch (_) {
+      // Keep auth flow responsive if fallback audit logging is denied.
+    }
+  }
+
+  String _resolveLockerIdForEmail(String normalizedEmail) {
+    final firebaseProfile = _firebaseLoginProfiles[normalizedEmail];
+    if (firebaseProfile != null) {
+      return firebaseProfile.user.activeLockerId;
+    }
+    final localAccount = _accounts[normalizedEmail];
+    if (localAccount != null) {
+      return localAccount.user.activeLockerId;
+    }
+    return '';
+  }
+
+  Future<String> _resolveUserIdForEmail(String normalizedEmail) async {
+    final firebaseProfile = _firebaseLoginProfiles[normalizedEmail];
+    if (firebaseProfile != null) {
+      return firebaseProfile.user.userId;
+    }
+
+    final localAccount = _accounts[normalizedEmail];
+    if (localAccount != null) {
+      return localAccount.user.userId;
+    }
+
+    if (!_useFirebase) {
+      return '';
+    }
+
+    try {
+      final snap = await _firestore!
+          .collection(_usersCollection)
+          .where('email', isEqualTo: normalizedEmail)
+          .limit(1)
+          .get();
+      if (snap.docs.isEmpty) {
+        return '';
+      }
+      return snap.docs.first.id;
+    } catch (_) {
+      return '';
+    }
+  }
+
   void _setBusy(bool value) {
     if (_isBusy == value) {
       return;
     }
     _isBusy = value;
     notifyListeners();
+  }
+
+  @override
+  void dispose() {
+    _lockoutTicker?.cancel();
+    _lockoutTicker = null;
+    super.dispose();
   }
 }
 
@@ -1002,6 +1701,24 @@ class _FirebaseLoginProfile {
 
   final AppUser user;
   final bool hasActiveLocker;
+}
+
+class _PendingAuthLogEvent {
+  const _PendingAuthLogEvent({
+    required this.eventType,
+    required this.status,
+    required this.details,
+    required this.source,
+    required this.createdAt,
+    this.metadata,
+  });
+
+  final String eventType;
+  final String status;
+  final String details;
+  final String source;
+  final DateTime createdAt;
+  final Map<String, dynamic>? metadata;
 }
 
 class LockerBuildingAvailability {

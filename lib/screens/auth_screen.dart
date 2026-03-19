@@ -3,6 +3,7 @@ import 'package:flutter/services.dart';
 
 import '../core/auth_controller.dart';
 import '../core/design_tokens.dart';
+import '../widgets/halftone_painter.dart';
 
 // ─────────────────────────────────────────────────────────────────────────────
 //  AuthScreen — Editorial Dark Minimalism
@@ -30,6 +31,7 @@ class AuthScreen extends StatefulWidget {
 class _AuthScreenState extends State<AuthScreen>
     with SingleTickerProviderStateMixin {
   static const String _signupEmailDomain = '@tip.edu.ph';
+  static const String _lockoutPrefix = 'Too many failed attempts.';
 
   final _formKey = GlobalKey<FormState>();
   final _firstNameCtrl = TextEditingController();
@@ -145,6 +147,10 @@ class _AuthScreenState extends State<AuthScreen>
     return null;
   }
 
+  bool _isLockoutText(String? value) {
+    return value != null && value.startsWith(_lockoutPrefix);
+  }
+
   @override
   Widget build(BuildContext context) {
     return AnimatedBuilder(
@@ -153,6 +159,12 @@ class _AuthScreenState extends State<AuthScreen>
         final isBusy = widget.controller.isBusy;
         final registeredEmails = widget.controller.registeredEmails;
         final mq = MediaQuery.of(context);
+        final liveLockoutMessage = widget.controller.lockoutMessageForEmail(
+          _emailCtrl.text,
+        );
+        final visibleErrorText =
+            liveLockoutMessage ??
+            (_isLockoutText(_errorText) ? null : _errorText);
 
         return Scaffold(
           backgroundColor: T.bg,
@@ -160,7 +172,7 @@ class _AuthScreenState extends State<AuthScreen>
             children: [
               // Halftone — same as dashboard
               const Positioned.fill(
-                child: CustomPaint(painter: _HalftonePainter()),
+                child: CustomPaint(painter: HalftonePainter()),
               ),
 
               SafeArea(
@@ -277,7 +289,7 @@ class _AuthScreenState extends State<AuthScreen>
                                         ),
                                       ),
                                       DropdownButtonFormField<String>(
-                                        value:
+                                        initialValue:
                                             registeredEmails.contains(
                                               _emailCtrl.text
                                                   .trim()
@@ -524,7 +536,7 @@ class _AuthScreenState extends State<AuthScreen>
                               ),
 
                               // ── Error ─────────────────────────────────────────
-                              if (_errorText != null) ...[
+                              if (visibleErrorText != null) ...[
                                 const SizedBox(height: T.gap20),
                                 _slide(
                                   7,
@@ -538,7 +550,7 @@ class _AuthScreenState extends State<AuthScreen>
                                       const SizedBox(width: T.gap8),
                                       Expanded(
                                         child: Text(
-                                          _errorText!,
+                                          visibleErrorText,
                                           style: const TextStyle(
                                             fontSize: 12,
                                             fontWeight: FontWeight.w600,
@@ -594,28 +606,6 @@ class _AuthScreenState extends State<AuthScreen>
       },
     );
   }
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-//  Halftone — exact copy from main.dart
-// ─────────────────────────────────────────────────────────────────────────────
-
-class _HalftonePainter extends CustomPainter {
-  const _HalftonePainter();
-
-  @override
-  void paint(Canvas canvas, Size size) {
-    final p = Paint()..color = const Color(0x08FFFFFF);
-    const spacing = 20.0;
-    for (double x = 0; x < size.width + spacing; x += spacing) {
-      for (double y = 0; y < size.height + spacing; y += spacing) {
-        canvas.drawCircle(Offset(x, y), 1.5, p);
-      }
-    }
-  }
-
-  @override
-  bool shouldRepaint(_) => false;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

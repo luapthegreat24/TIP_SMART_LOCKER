@@ -199,10 +199,7 @@ class _LockerSelectionScreenState extends State<LockerSelectionScreen> {
           actions: [
             TextButton(
               onPressed: () => Navigator.of(dialogContext).pop(false),
-              child: const Text(
-                'Cancel',
-                style: TextStyle(color: T.textMuted),
-              ),
+              child: const Text('Cancel', style: TextStyle(color: T.textMuted)),
             ),
             FilledButton(
               style: FilledButton.styleFrom(

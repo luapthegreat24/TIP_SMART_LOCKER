@@ -2,7 +2,8 @@ import 'package:flutter/material.dart';
 
 import '../core/auth_controller.dart';
 import '../core/design_tokens.dart';
-import 'profile_screen.dart';
+import '../widgets/layered_panel.dart';
+import '../widgets/top_back_button.dart';
 
 class SettingsScreen extends StatelessWidget {
   final LayeredPanelBuilder layeredPanel;
@@ -56,7 +57,7 @@ class SettingsScreen extends StatelessWidget {
               children: [
                 Row(
                   children: [
-                    _TopBackButton(onTap: onBack),
+                    TopBackButton(onTap: onBack),
                     const SizedBox(width: T.gap12),
                     const Text(
                       'SETTINGS',
@@ -143,7 +144,7 @@ class SettingsScreen extends StatelessWidget {
                           T.gap12,
                         ),
                         child: Text(
-                          'ACCOUNT SESSION',
+                          'ACCOUNT DETAILS',
                           style: TextStyle(
                             fontSize: 11,
                             fontWeight: FontWeight.w600,
@@ -155,84 +156,113 @@ class SettingsScreen extends StatelessWidget {
                       const Divider(color: T.border, thickness: 1, height: 1),
                       Padding(
                         padding: const EdgeInsets.all(T.gap16),
-                        child: Row(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
-                            Container(
-                              width: 54,
-                              height: 54,
-                              decoration: BoxDecoration(
-                                color: T.accentDim,
-                                borderRadius: BorderRadius.circular(T.r16),
-                                border: Border.all(
-                                  color: T.accent.withOpacity(0.35),
-                                  width: T.strokeSm,
-                                ),
-                              ),
-                              child: Center(
-                                child: Text(
-                                  user.initials,
-                                  style: const TextStyle(
-                                    fontSize: 22,
-                                    fontWeight: FontWeight.w900,
-                                    color: T.accent,
+                            Row(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Container(
+                                  width: 54,
+                                  height: 54,
+                                  decoration: BoxDecoration(
+                                    color: T.accentDim,
+                                    borderRadius: BorderRadius.circular(T.r16),
+                                    border: Border.all(
+                                      color: T.accent.withOpacity(0.35),
+                                      width: T.strokeSm,
+                                    ),
+                                  ),
+                                  child: Center(
+                                    child: Text(
+                                      user.initials,
+                                      style: const TextStyle(
+                                        fontSize: 22,
+                                        fontWeight: FontWeight.w900,
+                                        color: T.accent,
+                                      ),
+                                    ),
                                   ),
                                 ),
-                              ),
+                                const SizedBox(width: T.gap12),
+                                Expanded(
+                                  child: Column(
+                                    crossAxisAlignment:
+                                        CrossAxisAlignment.start,
+                                    children: [
+                                      Text(
+                                        '${user.firstName} ${user.lastName}'
+                                            .trim(),
+                                        style: const TextStyle(
+                                          fontSize: 16,
+                                          fontWeight: FontWeight.w800,
+                                          color: T.textPrimary,
+                                        ),
+                                      ),
+                                      const SizedBox(height: 4),
+                                      Text(
+                                        user.email,
+                                        overflow: TextOverflow.ellipsis,
+                                        style: const TextStyle(
+                                          fontSize: 12,
+                                          color: T.textSecondary,
+                                        ),
+                                      ),
+                                      const SizedBox(height: 8),
+                                      Container(
+                                        padding: const EdgeInsets.symmetric(
+                                          horizontal: 8,
+                                          vertical: 4,
+                                        ),
+                                        decoration: BoxDecoration(
+                                          color: T.greenDim,
+                                          borderRadius: BorderRadius.circular(
+                                            T.r8,
+                                          ),
+                                          border: Border.all(
+                                            color: T.green.withOpacity(0.3),
+                                            width: T.strokeSm,
+                                          ),
+                                        ),
+                                        child: const Text(
+                                          'ACTIVE LOCKER',
+                                          style: TextStyle(
+                                            fontSize: 9,
+                                            fontWeight: FontWeight.w700,
+                                            color: T.green,
+                                            letterSpacing: 1.0,
+                                          ),
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                                ),
+                              ],
                             ),
-                            const SizedBox(width: T.gap12),
-                            Expanded(
-                              child: Column(
-                                crossAxisAlignment: CrossAxisAlignment.start,
-                                children: [
-                                  Text(
-                                    '${user.firstName} ${user.lastName}'.trim(),
-                                    style: const TextStyle(
-                                      fontSize: 16,
-                                      fontWeight: FontWeight.w800,
-                                      color: T.textPrimary,
-                                    ),
-                                  ),
-                                  const SizedBox(height: 4),
-                                  Text(
-                                    user.email,
-                                    overflow: TextOverflow.ellipsis,
-                                    style: const TextStyle(
-                                      fontSize: 12,
-                                      color: T.textSecondary,
-                                    ),
-                                  ),
-                                  const SizedBox(height: 4),
-                                  Text(
-                                    user.campus,
-                                    overflow: TextOverflow.ellipsis,
-                                    style: const TextStyle(
-                                      fontSize: 11,
-                                      color: T.textMuted,
-                                    ),
-                                  ),
-                                  const SizedBox(height: 4),
-                                  Text(
-                                    'Locker ID: ${user.activeLockerId.trim().isEmpty ? 'Not assigned' : user.activeLockerId}',
-                                    overflow: TextOverflow.ellipsis,
-                                    style: const TextStyle(
-                                      fontSize: 11,
-                                      fontWeight: FontWeight.w700,
-                                      color: T.textSecondary,
-                                    ),
-                                  ),
-                                  const SizedBox(height: 2),
-                                  Text(
-                                    user.lockerLocation.trim().isEmpty
-                                        ? 'Location: Not assigned'
-                                        : 'Location: ${user.lockerLocation}',
-                                    overflow: TextOverflow.ellipsis,
-                                    style: const TextStyle(
-                                      fontSize: 10,
-                                      color: T.textMuted,
-                                    ),
-                                  ),
-                                ],
-                              ),
+                            const SizedBox(height: T.gap12),
+                            const Divider(
+                              color: T.border,
+                              thickness: 1,
+                              height: 1,
+                            ),
+                            const SizedBox(height: T.gap12),
+                            _SessionInfoRow(
+                              label: 'Campus',
+                              value: user.campus,
+                            ),
+                            const SizedBox(height: T.gap8),
+                            _SessionInfoRow(
+                              label: 'Locker ID',
+                              value: user.activeLockerId.trim().isEmpty
+                                  ? 'Not assigned'
+                                  : user.activeLockerId,
+                            ),
+                            const SizedBox(height: T.gap8),
+                            _SessionInfoRow(
+                              label: 'Location',
+                              value: user.lockerLocation.trim().isEmpty
+                                  ? 'Not assigned'
+                                  : user.lockerLocation,
                             ),
                           ],
                         ),
@@ -501,37 +531,6 @@ class SettingsScreen extends StatelessWidget {
   }
 }
 
-class _TopBackButton extends StatelessWidget {
-  final VoidCallback onTap;
-
-  const _TopBackButton({required this.onTap});
-
-  @override
-  Widget build(BuildContext context) {
-    return GestureDetector(
-      onTap: onTap,
-      behavior: HitTestBehavior.opaque,
-      child: Container(
-        width: 38,
-        height: 38,
-        decoration: BoxDecoration(
-          color: T.surface,
-          borderRadius: BorderRadius.circular(T.r12),
-          border: Border.all(color: T.border, width: T.strokeSm),
-          boxShadow: const [
-            BoxShadow(color: T.shadow, offset: Offset(2, 2), blurRadius: 4),
-          ],
-        ),
-        child: const Icon(
-          Icons.arrow_back_rounded,
-          color: T.textPrimary,
-          size: 18,
-        ),
-      ),
-    );
-  }
-}
-
 class _SettingsToggle extends StatelessWidget {
   final IconData icon;
   final String label;
@@ -588,7 +587,11 @@ class _SettingsToggle extends StatelessWidget {
               ],
             ),
           ),
-          Switch(value: value, onChanged: onChanged, activeColor: T.accent),
+          Switch(
+            value: value,
+            onChanged: onChanged,
+            activeThumbColor: T.accent,
+          ),
         ],
       ),
     );
@@ -626,6 +629,46 @@ class _InfoTextRow extends StatelessWidget {
           ),
         ],
       ),
+    );
+  }
+}
+
+class _SessionInfoRow extends StatelessWidget {
+  final String label;
+  final String value;
+
+  const _SessionInfoRow({required this.label, required this.value});
+
+  @override
+  Widget build(BuildContext context) {
+    return Row(
+      children: [
+        SizedBox(
+          width: 86,
+          child: Text(
+            label,
+            style: const TextStyle(
+              fontSize: 11,
+              fontWeight: FontWeight.w600,
+              color: T.textMuted,
+              letterSpacing: 0.8,
+            ),
+          ),
+        ),
+        const SizedBox(width: T.gap8),
+        Expanded(
+          child: Text(
+            value,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: const TextStyle(
+              fontSize: 12,
+              fontWeight: FontWeight.w600,
+              color: T.textSecondary,
+            ),
+          ),
+        ),
+      ],
     );
   }
 }
