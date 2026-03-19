@@ -186,11 +186,11 @@ class _AuthScreenState extends State<AuthScreen>
                                 Row(
                                   children: [
                                     Container(
-                                      width: 24,
-                                      height: 24,
+                                      width: 32,
+                                      height: 32,
                                       decoration: BoxDecoration(
                                         color: T.accentDim,
-                                        borderRadius: BorderRadius.circular(6),
+                                        borderRadius: BorderRadius.circular(8),
                                         border: Border.all(
                                           color: T.accent.withOpacity(0.28),
                                           width: T.strokeSm,
@@ -198,18 +198,18 @@ class _AuthScreenState extends State<AuthScreen>
                                       ),
                                       child: const Icon(
                                         Icons.lock_person_rounded,
-                                        size: 12,
+                                        size: 16,
                                         color: T.accent,
                                       ),
                                     ),
                                     const SizedBox(width: T.gap8),
                                     const Text(
-                                      'MY LOCKER',
+                                      'T.I.P. SMART LOCKER',
                                       style: TextStyle(
-                                        fontSize: 10,
-                                        fontWeight: FontWeight.w700,
+                                        fontSize: 14,
+                                        fontWeight: FontWeight.w800,
                                         color: T.textMuted,
-                                        letterSpacing: 2.0,
+                                        letterSpacing: 1.8,
                                       ),
                                     ),
                                   ],

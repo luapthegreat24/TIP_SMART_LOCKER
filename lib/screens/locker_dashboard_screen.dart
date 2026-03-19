@@ -2,12 +2,15 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:provider/provider.dart';
 
 import '../core/activity_models.dart';
 import '../core/auth_controller.dart';
 import '../core/design_tokens.dart';
+import '../core/locker_lock_controller.dart';
 import '../widgets/comic_card.dart';
 import '../widgets/floating_nav_bar.dart';
+import '../widgets/floating_lock_toggle.dart';
 import '../widgets/halftone_painter.dart';
 import '../widgets/layered_panel.dart';
 import '../widgets/lock_toast_overlay.dart';
@@ -106,7 +109,6 @@ class _LockerDashboardScreenState extends State<LockerDashboardScreen>
   static const double _fabGapAboveNav = 12;
   static const Duration _autoLockDelay = Duration(seconds: 30);
 
-  bool _isLocked = true;
   int _activeTab = 0;
   int _previousTab = 0;
   Offset? _lockFabPos;
@@ -115,7 +117,6 @@ class _LockerDashboardScreenState extends State<LockerDashboardScreen>
   final int _alertCount = 0;
   DateTime? _lastToggledAt;
   bool _notifEnabled = true;
-  bool _biometricEnabled = false;
   bool _autoLock = true;
 
   String get _lockerIdLabel {
@@ -142,6 +143,7 @@ class _LockerDashboardScreenState extends State<LockerDashboardScreen>
 
   late final AnimationController _entranceCtrl;
   late final AnimationController _lockCtrl;
+  late final LockerLockController _lockController;
   late final List<Animation<double>> _slides;
   late final Animation<Color?> _lockColor;
   late final Animation<Color?> _lockBg;
@@ -160,6 +162,8 @@ class _LockerDashboardScreenState extends State<LockerDashboardScreen>
   @override
   void initState() {
     super.initState();
+
+    _lockController = context.read<LockerLockController>();
 
     _entranceCtrl = AnimationController(
       vsync: this,
@@ -188,17 +192,39 @@ class _LockerDashboardScreenState extends State<LockerDashboardScreen>
       end: T.redDim,
     ).animate(CurvedAnimation(parent: _lockCtrl, curve: Curves.easeInOut));
 
+    if (!_lockController.isLocked) {
+      _lockCtrl.value = 1;
+    }
+    _lockController.addListener(_onGlobalLockChanged);
+
     _subscribeToLogs();
   }
 
   @override
   void dispose() {
     _autoLockTimer?.cancel();
+    _lockController.removeListener(_onGlobalLockChanged);
     _lockToastOverlay.dispose();
     _logsSubscription?.cancel();
     _entranceCtrl.dispose();
     _lockCtrl.dispose();
     super.dispose();
+  }
+
+  void _onGlobalLockChanged() {
+    if (!mounted) {
+      return;
+    }
+    final isLocked = _lockController.isLocked;
+    if (isLocked) {
+      _lockCtrl.reverse();
+    } else {
+      _lockCtrl.forward();
+    }
+    setState(() {
+      _lastToggledAt = _lockController.lastChangedAt;
+    });
+    _registerUserActivity();
   }
 
   Widget _slide(int index, Widget child) => AnimatedBuilder(
@@ -233,13 +259,8 @@ class _LockerDashboardScreenState extends State<LockerDashboardScreen>
     bool showToast = true,
     bool playHaptic = true,
   }) async {
-    final wasLocked = _isLocked;
-    final now = DateTime.now();
-    setState(() {
-      _isLocked = !wasLocked;
-      _lastToggledAt = now;
-    });
-    _isLocked ? _lockCtrl.reverse() : _lockCtrl.forward();
+    final wasLocked = _lockController.isLocked;
+    final isLocked = _lockController.toggle();
     if (playHaptic) {
       HapticFeedback.heavyImpact();
     }
@@ -248,7 +269,7 @@ class _LockerDashboardScreenState extends State<LockerDashboardScreen>
         _lockToastOverlay.show(
           context: context,
           vsync: this,
-          isLocked: _isLocked,
+          isLocked: isLocked,
         ),
       );
     }
@@ -276,11 +297,10 @@ class _LockerDashboardScreenState extends State<LockerDashboardScreen>
     if (!mounted) {
       return;
     }
-    _registerUserActivity();
   }
 
   void _registerUserActivity() {
-    if (!_autoLock || _isLocked) {
+    if (!_autoLock || _lockController.isLocked) {
       _autoLockTimer?.cancel();
       return;
     }
@@ -292,22 +312,17 @@ class _LockerDashboardScreenState extends State<LockerDashboardScreen>
   }
 
   Future<void> _runAutoLock() async {
-    if (!mounted || !_autoLock || _isLocked) {
+    if (!mounted || !_autoLock || _lockController.isLocked) {
       return;
     }
 
-    final now = DateTime.now();
-    setState(() {
-      _isLocked = true;
-      _lastToggledAt = now;
-    });
-    _lockCtrl.reverse();
+    _lockController.setLocked(true);
     HapticFeedback.mediumImpact();
     unawaited(
       _lockToastOverlay.show(
         context: context,
         vsync: this,
-        isLocked: _isLocked,
+        isLocked: _lockController.isLocked,
       ),
     );
 
@@ -366,11 +381,8 @@ class _LockerDashboardScreenState extends State<LockerDashboardScreen>
           controller: widget.controller,
           userId: widget.user.userId,
           userEmail: widget.user.email,
+          lockerId: widget.user.activeLockerId,
           initialActivities: _activities,
-          initialLockState: _isLocked,
-          onToggleLock: () {
-            unawaited(_toggleLock(showToast: false, playHaptic: false));
-          },
           onNavigateTab: _onTabPressed,
         ),
       ),
@@ -381,12 +393,13 @@ class _LockerDashboardScreenState extends State<LockerDashboardScreen>
     Navigator.of(context).push(
       MaterialPageRoute(
         builder: (_) => LockerMapScreen(
+          controller: widget.controller,
+          userId: widget.user.userId,
+          userEmail: widget.user.email,
           lockerLocation: _lockerLocationLabel,
           campus: widget.user.campus,
           assignedLockerId: _lockerIdLabel,
           mapImageAssetPath: 'assets/images/TIP_MAP.png',
-          initialLockState: _isLocked,
-          onToggleLock: () => _toggleLock(showToast: false, playHaptic: false),
           onNavigateTab: _onTabPressed,
         ),
       ),
@@ -477,82 +490,41 @@ class _LockerDashboardScreenState extends State<LockerDashboardScreen>
       screen.width - fabSize - 24,
       screen.height - fabSize - reservedBottom,
     );
+    _lockFabPos = _lockController.fabPosition ?? _lockFabPos;
     _lockFabPos = _clampLockFab(_lockFabPos!, screen, pad, fabSize);
+    _lockController.setFabPosition(_lockFabPos!, notify: false);
 
-    return AnimatedPositioned(
-      duration: _isDraggingLockFab
-          ? Duration.zero
-          : const Duration(milliseconds: 220),
-      curve: Curves.easeOutCubic,
-      left: _lockFabPos!.dx,
-      top: _lockFabPos!.dy,
-      child: AnimatedBuilder(
-        animation: Listenable.merge([_lockColor, _lockBg]),
-        builder: (_, __) {
-          final color = _lockColor.value ?? T.green;
-          final bg = _lockBg.value ?? T.greenDim;
-          return GestureDetector(
-            onTap: () {
-              unawaited(_toggleLock());
-            },
-            onPanStart: (_) {
-              setState(() => _isDraggingLockFab = true);
-            },
-            onPanUpdate: (details) {
-              setState(() {
-                _lockFabPos = _clampLockFab(
-                  _lockFabPos! + details.delta,
-                  screen,
-                  pad,
-                  fabSize,
-                );
-              });
-            },
-            onPanEnd: (_) {
-              setState(() {
-                _lockFabPos = _snapLockFabToEdge(
-                  _lockFabPos!,
-                  screen,
-                  pad,
-                  fabSize,
-                );
-                _isDraggingLockFab = false;
-              });
-              HapticFeedback.selectionClick();
-              _registerUserActivity();
-            },
-            child: AnimatedContainer(
-              duration: const Duration(milliseconds: 220),
-              curve: Curves.easeOutCubic,
-              width: fabSize,
-              height: fabSize,
-              decoration: BoxDecoration(
-                shape: BoxShape.circle,
-                color: bg.withOpacity(0.82),
-                border: Border.all(color: color.withOpacity(0.55), width: 1),
-                boxShadow: [
-                  BoxShadow(
-                    color: T.shadow.withOpacity(0.52),
-                    offset: const Offset(0, 6),
-                    blurRadius: 14,
-                  ),
-                ],
-              ),
-              child: AnimatedSwitcher(
-                duration: const Duration(milliseconds: 220),
-                transitionBuilder: (child, anim) =>
-                    FadeTransition(opacity: anim, child: child),
-                child: Icon(
-                  _isLocked ? Icons.lock_rounded : Icons.lock_open_rounded,
-                  key: ValueKey(_isLocked),
-                  color: color,
-                  size: 24,
-                ),
-              ),
-            ),
+    return FloatingLockToggle(
+      isLocked: _lockController.isLocked,
+      isDragging: _isDraggingLockFab,
+      position: _lockFabPos!,
+      size: fabSize,
+      onTap: () {
+        unawaited(_toggleLock());
+      },
+      onPanStart: (_) {
+        setState(() => _isDraggingLockFab = true);
+      },
+      onPanUpdate: (details) {
+        setState(() {
+          _lockFabPos = _clampLockFab(
+            _lockFabPos! + details.delta,
+            screen,
+            pad,
+            fabSize,
           );
-        },
-      ),
+        });
+        _lockController.setFabPosition(_lockFabPos!);
+      },
+      onPanEnd: (_) {
+        setState(() {
+          _lockFabPos = _snapLockFabToEdge(_lockFabPos!, screen, pad, fabSize);
+          _isDraggingLockFab = false;
+        });
+        _lockController.setFabPosition(_lockFabPos!);
+        HapticFeedback.selectionClick();
+        _registerUserActivity();
+      },
     );
   }
 
@@ -688,7 +660,7 @@ class _LockerDashboardScreenState extends State<LockerDashboardScreen>
                 ),
                 const SizedBox(height: T.gap12),
                 Text(
-                  _isLocked
+                  _lockController.isLocked
                       ? 'Everything is secured.${_lastToggledAt != null ? ' Locked ${_timeAgo(_lastToggledAt!)}.' : ''}'
                       : 'Locker is open. Tap the lock icon when you\'re done.',
                   style: const TextStyle(
@@ -757,7 +729,7 @@ class _LockerDashboardScreenState extends State<LockerDashboardScreen>
                         child: Row(
                           children: [
                             iconChip(
-                              _isLocked
+                              _lockController.isLocked
                                   ? Icons.lock_rounded
                                   : Icons.lock_open_rounded,
                               color,
@@ -777,7 +749,7 @@ class _LockerDashboardScreenState extends State<LockerDashboardScreen>
                             mainAxisAlignment: MainAxisAlignment.center,
                             children: [
                               Text(
-                                _isLocked ? 'Locked' : 'Open',
+                                _lockController.isLocked ? 'Locked' : 'Open',
                                 style: TextStyle(
                                   fontSize: 27,
                                   fontWeight: FontWeight.w900,
@@ -788,7 +760,9 @@ class _LockerDashboardScreenState extends State<LockerDashboardScreen>
                               ),
                               const SizedBox(height: T.gap4),
                               Text(
-                                _isLocked ? 'Secure' : 'Access open',
+                                _lockController.isLocked
+                                    ? 'Secure'
+                                    : 'Access open',
                                 style: const TextStyle(
                                   fontSize: 12,
                                   fontWeight: FontWeight.w400,
@@ -1125,7 +1099,6 @@ class _LockerDashboardScreenState extends State<LockerDashboardScreen>
                         onLogout: widget.onLogout,
                         contentBottomPadding: _contentBottomPadding,
                         notifEnabled: _notifEnabled,
-                        biometricEnabled: _biometricEnabled,
                         autoLock: _autoLock,
                         onNotifChanged: (value) {
                           final previous = _notifEnabled;
@@ -1133,17 +1106,6 @@ class _LockerDashboardScreenState extends State<LockerDashboardScreen>
                           unawaited(
                             widget.controller.logSettingChange(
                               settingKey: 'notifications',
-                              previousValue: previous,
-                              newValue: value,
-                            ),
-                          );
-                        },
-                        onBiometricChanged: (value) {
-                          final previous = _biometricEnabled;
-                          setState(() => _biometricEnabled = value);
-                          unawaited(
-                            widget.controller.logSettingChange(
-                              settingKey: 'biometric_unlock',
                               previousValue: previous,
                               newValue: value,
                             ),
@@ -1551,18 +1513,16 @@ class _ActivityLogPage extends StatefulWidget {
   final AuthController controller;
   final String userId;
   final String userEmail;
+  final String lockerId;
   final List<ActivityItem> initialActivities;
-  final bool initialLockState;
-  final VoidCallback onToggleLock;
   final ValueChanged<int> onNavigateTab;
 
   const _ActivityLogPage({
     required this.controller,
     required this.userId,
     required this.userEmail,
+    required this.lockerId,
     required this.initialActivities,
-    required this.initialLockState,
-    required this.onToggleLock,
     required this.onNavigateTab,
   });
 
@@ -1581,8 +1541,9 @@ class _ActivityLogPageState extends State<_ActivityLogPage>
   _LogSort _activeSort = _LogSort.newest;
   String _query = '';
   late List<ActivityItem> _activities;
-  late bool _isLockedView;
   int _activeTab = 0;
+  Offset? _lockFabPos;
+  bool _isDraggingLockFab = false;
   StreamSubscription<List<LockerLogEntry>>? _logsSubscription;
   final LockToastOverlay _lockToastOverlay = LockToastOverlay();
 
@@ -1596,7 +1557,6 @@ class _ActivityLogPageState extends State<_ActivityLogPage>
   void initState() {
     super.initState();
     _activities = List<ActivityItem>.from(widget.initialActivities);
-    _isLockedView = widget.initialLockState;
     _subscribeToLogs();
   }
 
@@ -1615,17 +1575,88 @@ class _ActivityLogPageState extends State<_ActivityLogPage>
     Navigator.of(context).maybePop();
   }
 
-  void _onToggleLockFromLogs() {
+  Future<void> _onToggleLockFromLogs() async {
+    final lockController = context.read<LockerLockController>();
+    final wasLocked = lockController.isLocked;
+    final isLocked = lockController.toggle();
     HapticFeedback.heavyImpact();
-    setState(() => _isLockedView = !_isLockedView);
+
     unawaited(
-      _lockToastOverlay.show(
-        context: context,
-        vsync: this,
-        isLocked: _isLockedView,
-      ),
+      _lockToastOverlay.show(context: context, vsync: this, isLocked: isLocked),
     );
-    widget.onToggleLock();
+
+    final userId = widget.userId.trim();
+    if (userId.isEmpty) {
+      return;
+    }
+
+    await widget.controller.addLogEvent(
+      userId: userId,
+      lockerId: widget.lockerId.trim().isEmpty ? 'unknown' : widget.lockerId,
+      eventType: wasLocked ? 'MOBILE_UNLOCK' : 'MOBILE_LOCK',
+      authMethod: 'Mobile App',
+      source: 'activity_logs_fab',
+      status: 'success',
+      details: wasLocked
+          ? 'Locker unlocked via activity logs toggle.'
+          : 'Locker locked via activity logs toggle.',
+      metadata: {
+        'state_before': wasLocked ? 'locked' : 'unlocked',
+        'state_after': isLocked ? 'locked' : 'unlocked',
+      },
+    );
+  }
+
+  Offset _clampLockFab(
+    Offset candidate,
+    Size screen,
+    EdgeInsets pad,
+    double size,
+  ) {
+    const edgeInset = 10.0;
+    final reservedBottom =
+        pad.bottom + _navBottomOffset + _navHeight + _fabGapAboveNav;
+    final minX = edgeInset;
+    final maxX = screen.width - size - edgeInset;
+    final minY = pad.top + edgeInset;
+    final maxY = screen.height - size - reservedBottom;
+    return Offset(
+      candidate.dx.clamp(minX, maxX),
+      candidate.dy.clamp(minY, maxY),
+    );
+  }
+
+  Offset _snapLockFabToEdge(
+    Offset current,
+    Size screen,
+    EdgeInsets pad,
+    double size,
+  ) {
+    const edgeInset = 10.0;
+    final reservedBottom =
+        pad.bottom + _navBottomOffset + _navHeight + _fabGapAboveNav;
+    final left = edgeInset;
+    final right = screen.width - size - edgeInset;
+    final top = pad.top + edgeInset;
+    final bottom = screen.height - size - reservedBottom;
+
+    final distances = {
+      'left': (current.dx - left).abs(),
+      'right': (right - current.dx).abs(),
+      'top': (current.dy - top).abs(),
+      'bottom': (bottom - current.dy).abs(),
+    };
+
+    final nearest = distances.entries
+        .reduce((a, b) => a.value <= b.value ? a : b)
+        .key;
+
+    return switch (nearest) {
+      'left' => Offset(left, current.dy),
+      'right' => Offset(right, current.dy),
+      'top' => Offset(current.dx, top),
+      _ => Offset(current.dx, bottom),
+    };
   }
 
   void _subscribeToLogs() {
@@ -1867,11 +1898,21 @@ class _ActivityLogPageState extends State<_ActivityLogPage>
   Widget build(BuildContext context) {
     final visible = _visibleActivities;
     final grouped = _groupedActivities;
-    final lockColor = _isLockedView ? T.green : T.red;
-    final lockBg = _isLockedView ? T.greenDim : T.redDim;
+    final lockController = context.watch<LockerLockController>();
+    final isLocked = lockController.isLocked;
     final mq = MediaQuery.of(context);
-    final fabBottom =
-        mq.padding.bottom + _navBottomOffset + _navHeight + _fabGapAboveNav;
+    final screen = mq.size;
+    final pad = mq.padding;
+    const fabSize = 56.0;
+    final reservedBottom =
+        pad.bottom + _navBottomOffset + _navHeight + _fabGapAboveNav;
+    _lockFabPos ??= Offset(
+      screen.width - fabSize - 24,
+      screen.height - fabSize - reservedBottom,
+    );
+    _lockFabPos = lockController.fabPosition ?? _lockFabPos;
+    _lockFabPos = _clampLockFab(_lockFabPos!, screen, pad, fabSize);
+    lockController.setFabPosition(_lockFabPos!, notify: false);
 
     return Scaffold(
       backgroundColor: T.bg,
@@ -2114,34 +2155,40 @@ class _ActivityLogPageState extends State<_ActivityLogPage>
             ),
           ),
           Positioned(
-            right: 24,
-            bottom: fabBottom,
-            child: GestureDetector(
-              onTap: _onToggleLockFromLogs,
-              child: Container(
-                width: 56,
-                height: 56,
-                decoration: BoxDecoration(
-                  color: lockBg,
-                  borderRadius: BorderRadius.circular(T.r16),
-                  border: Border.all(
-                    color: lockColor.withOpacity(0.5),
-                    width: T.stroke,
-                  ),
-                  boxShadow: [
-                    BoxShadow(
-                      color: lockColor.withOpacity(0.28),
-                      offset: const Offset(0, 4),
-                      blurRadius: 14,
-                    ),
-                  ],
-                ),
-                child: Icon(
-                  _isLockedView ? Icons.lock_rounded : Icons.lock_open_rounded,
-                  color: lockColor,
-                  size: 26,
-                ),
-              ),
+            child: FloatingLockToggle(
+              isLocked: isLocked,
+              isDragging: _isDraggingLockFab,
+              position: _lockFabPos!,
+              onTap: () {
+                unawaited(_onToggleLockFromLogs());
+              },
+              onPanStart: (_) {
+                setState(() => _isDraggingLockFab = true);
+              },
+              onPanUpdate: (details) {
+                setState(() {
+                  _lockFabPos = _clampLockFab(
+                    _lockFabPos! + details.delta,
+                    screen,
+                    pad,
+                    fabSize,
+                  );
+                });
+                lockController.setFabPosition(_lockFabPos!);
+              },
+              onPanEnd: (_) {
+                setState(() {
+                  _lockFabPos = _snapLockFabToEdge(
+                    _lockFabPos!,
+                    screen,
+                    pad,
+                    fabSize,
+                  );
+                  _isDraggingLockFab = false;
+                });
+                lockController.setFabPosition(_lockFabPos!);
+                HapticFeedback.selectionClick();
+              },
             ),
           ),
           FloatingNavBar(

@@ -1,9 +1,11 @@
 import 'package:firebase_core/firebase_core.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:provider/provider.dart';
 
 import 'core/auth_controller.dart';
 import 'core/design_tokens.dart';
+import 'core/locker_lock_controller.dart';
 import 'firebase_options.dart';
 import 'screens/auth_screen.dart';
 import 'screens/locker_dashboard_screen.dart';
@@ -30,16 +32,19 @@ class LockerApp extends StatefulWidget {
 
 class _LockerAppState extends State<LockerApp> {
   late final AuthController _authController;
+  late final LockerLockController _lockerLockController;
 
   @override
   void initState() {
     super.initState();
     _authController = AuthController.firebase();
+    _lockerLockController = LockerLockController(initialLocked: true);
     _authController.restoreSession();
   }
 
   @override
   void dispose() {
+    _lockerLockController.dispose();
     _authController.dispose();
     super.dispose();
   }
@@ -48,39 +53,42 @@ class _LockerAppState extends State<LockerApp> {
   Widget build(BuildContext context) {
     return AnimatedBuilder(
       animation: _authController,
-      builder: (context, _) => MaterialApp(
-        title: 'My Locker',
-        debugShowCheckedModeBanner: false,
-        theme: ThemeData(
-          useMaterial3: true,
-          brightness: Brightness.dark,
-          scaffoldBackgroundColor: T.bg,
-          colorScheme: ColorScheme.fromSeed(
-            seedColor: T.accent,
+      builder: (context, _) => ChangeNotifierProvider.value(
+        value: _lockerLockController,
+        child: MaterialApp(
+          title: 'My Locker',
+          debugShowCheckedModeBanner: false,
+          theme: ThemeData(
+            useMaterial3: true,
             brightness: Brightness.dark,
-          ),
-          fontFamily: 'Roboto',
-          typography: Typography.material2021(),
-          snackBarTheme: SnackBarThemeData(
-            behavior: SnackBarBehavior.floating,
-            shape: RoundedRectangleBorder(
-              borderRadius: BorderRadius.circular(T.r12),
-              side: const BorderSide(color: T.border),
+            scaffoldBackgroundColor: T.bg,
+            colorScheme: ColorScheme.fromSeed(
+              seedColor: T.accent,
+              brightness: Brightness.dark,
+            ),
+            fontFamily: 'Roboto',
+            typography: Typography.material2021(),
+            snackBarTheme: SnackBarThemeData(
+              behavior: SnackBarBehavior.floating,
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(T.r12),
+                side: const BorderSide(color: T.border),
+              ),
             ),
           ),
+          home: _authController.isReady
+              ? _authController.isAuthenticated
+                    ? _authController.requiresLockerSelection
+                          ? LockerSelectionScreen(controller: _authController)
+                          : LockerDashboardScreen(
+                              key: ValueKey(_authController.currentUser!.email),
+                              controller: _authController,
+                              user: _authController.currentUser!,
+                              onLogout: _authController.logout,
+                            )
+                    : AuthScreen(controller: _authController)
+              : const _AppLoadingScreen(),
         ),
-        home: _authController.isReady
-            ? _authController.isAuthenticated
-                  ? _authController.requiresLockerSelection
-                        ? LockerSelectionScreen(controller: _authController)
-                        : LockerDashboardScreen(
-                            key: ValueKey(_authController.currentUser!.email),
-                            controller: _authController,
-                            user: _authController.currentUser!,
-                            onLogout: _authController.logout,
-                          )
-                  : AuthScreen(controller: _authController)
-            : const _AppLoadingScreen(),
       ),
     );
   }

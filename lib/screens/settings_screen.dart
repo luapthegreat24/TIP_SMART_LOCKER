@@ -12,10 +12,8 @@ class SettingsScreen extends StatelessWidget {
   final Future<void> Function() onLogout;
   final double contentBottomPadding;
   final bool notifEnabled;
-  final bool biometricEnabled;
   final bool autoLock;
   final ValueChanged<bool> onNotifChanged;
-  final ValueChanged<bool> onBiometricChanged;
   final ValueChanged<bool> onAutoLockChanged;
 
   const SettingsScreen({
@@ -26,19 +24,14 @@ class SettingsScreen extends StatelessWidget {
     required this.onLogout,
     required this.contentBottomPadding,
     required this.notifEnabled,
-    required this.biometricEnabled,
     required this.autoLock,
     required this.onNotifChanged,
-    required this.onBiometricChanged,
     required this.onAutoLockChanged,
   });
 
   @override
   Widget build(BuildContext context) {
-    final enabledCount =
-        (notifEnabled ? 1 : 0) +
-        (biometricEnabled ? 1 : 0) +
-        (autoLock ? 1 : 0);
+    final enabledCount = (notifEnabled ? 1 : 0) + (autoLock ? 1 : 0);
 
     return LayoutBuilder(
       builder: (context, constraints) {
@@ -339,14 +332,6 @@ class SettingsScreen extends StatelessWidget {
                         sub: 'Alerts for lock activity',
                         value: notifEnabled,
                         onChanged: onNotifChanged,
-                      ),
-                      const Divider(color: T.border, thickness: 1, height: 1),
-                      _SettingsToggle(
-                        icon: Icons.fingerprint_rounded,
-                        label: 'Biometric Unlock',
-                        sub: 'Use fingerprint or face ID',
-                        value: biometricEnabled,
-                        onChanged: onBiometricChanged,
                       ),
                       const Divider(color: T.border, thickness: 1, height: 1),
                       _SettingsToggle(

@@ -2,31 +2,37 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:provider/provider.dart';
 
+import '../core/auth_controller.dart';
 import '../core/design_tokens.dart';
+import '../core/locker_lock_controller.dart';
 import '../widgets/comic_card.dart';
+import '../widgets/floating_lock_toggle.dart';
 import '../widgets/floating_nav_bar.dart';
 import '../widgets/halftone_painter.dart';
 import '../widgets/lock_toast_overlay.dart';
 import '../widgets/top_back_button.dart';
 
 class LockerMapScreen extends StatefulWidget {
+  final AuthController controller;
+  final String userId;
+  final String userEmail;
   final String lockerLocation;
   final String campus;
   final String assignedLockerId;
   final String mapImageAssetPath;
-  final bool initialLockState;
-  final Future<void> Function()? onToggleLock;
   final ValueChanged<int>? onNavigateTab;
 
   const LockerMapScreen({
     super.key,
+    required this.controller,
+    required this.userId,
+    required this.userEmail,
     required this.lockerLocation,
     required this.campus,
     this.assignedLockerId = '',
     this.mapImageAssetPath = 'assets/images/TIP_MAP.png',
-    this.initialLockState = true,
-    this.onToggleLock,
     this.onNavigateTab,
   });
 
@@ -65,7 +71,6 @@ class _LockerMapScreenState extends State<LockerMapScreen>
     NavEntry(Icons.settings_outlined, 'Settings'),
   ];
 
-  bool _isLocked = true;
   Offset? _lockFabPos;
   bool _isDraggingLockFab = false;
   String? _resolvedMapAssetPath;
@@ -79,7 +84,6 @@ class _LockerMapScreenState extends State<LockerMapScreen>
   @override
   void initState() {
     super.initState();
-    _isLocked = widget.initialLockState;
     unawaited(_resolveMapAssetPath());
   }
 
@@ -239,23 +243,34 @@ class _LockerMapScreenState extends State<LockerMapScreen>
   }
 
   Future<void> _toggleLock() async {
-    final nextState = !_isLocked;
-    setState(() {
-      _isLocked = nextState;
-    });
+    final lockController = context.read<LockerLockController>();
+    final wasLocked = lockController.isLocked;
+    final isLocked = lockController.toggle();
     HapticFeedback.lightImpact();
 
     // Map page owns the visible confirmation toast.
     unawaited(
-      _lockToastOverlay.show(
-        context: context,
-        vsync: this,
-        isLocked: _isLocked,
-      ),
+      _lockToastOverlay.show(context: context, vsync: this, isLocked: isLocked),
     );
 
-    if (widget.onToggleLock != null) {
-      await widget.onToggleLock!();
+    final userId = widget.userId.trim();
+    final lockerId = widget.assignedLockerId.trim();
+    if (userId.isNotEmpty && lockerId.isNotEmpty) {
+      await widget.controller.addLogEvent(
+        userId: userId,
+        lockerId: lockerId,
+        eventType: wasLocked ? 'MOBILE_UNLOCK' : 'MOBILE_LOCK',
+        authMethod: 'Mobile App',
+        source: 'map_page_fab',
+        status: 'success',
+        details: wasLocked
+            ? 'Locker unlocked via map page toggle.'
+            : 'Locker locked via map page toggle.',
+        metadata: {
+          'state_before': wasLocked ? 'locked' : 'unlocked',
+          'state_after': isLocked ? 'locked' : 'unlocked',
+        },
+      );
     }
   }
 
@@ -329,6 +344,8 @@ class _LockerMapScreenState extends State<LockerMapScreen>
   }
 
   Widget _buildLockToggleFab() {
+    final lockController = context.watch<LockerLockController>();
+    final isLocked = lockController.isLocked;
     const fabSize = 56.0;
     final mq = MediaQuery.of(context);
     final screen = mq.size;
@@ -339,77 +356,40 @@ class _LockerMapScreenState extends State<LockerMapScreen>
       screen.width - fabSize - 24,
       screen.height - fabSize - reservedBottom,
     );
+    _lockFabPos = lockController.fabPosition ?? _lockFabPos;
     _lockFabPos = _clampLockFab(_lockFabPos!, screen, pad, fabSize);
+    lockController.setFabPosition(_lockFabPos!, notify: false);
 
-    final color = _isLocked ? T.green : T.red;
-    final bg = _isLocked ? T.greenDim : T.redDim;
-
-    return AnimatedPositioned(
-      duration: _isDraggingLockFab
-          ? Duration.zero
-          : const Duration(milliseconds: 220),
-      curve: Curves.easeOutCubic,
-      left: _lockFabPos!.dx,
-      top: _lockFabPos!.dy,
-      child: GestureDetector(
-        onTap: () {
-          unawaited(_toggleLock());
-        },
-        onPanStart: (_) {
-          setState(() => _isDraggingLockFab = true);
-        },
-        onPanUpdate: (details) {
-          setState(() {
-            _lockFabPos = _clampLockFab(
-              _lockFabPos! + details.delta,
-              screen,
-              pad,
-              fabSize,
-            );
-          });
-        },
-        onPanEnd: (_) {
-          setState(() {
-            _lockFabPos = _snapLockFabToEdge(
-              _lockFabPos!,
-              screen,
-              pad,
-              fabSize,
-            );
-            _isDraggingLockFab = false;
-          });
-          HapticFeedback.selectionClick();
-        },
-        child: AnimatedContainer(
-          duration: const Duration(milliseconds: 220),
-          curve: Curves.easeOutCubic,
-          width: fabSize,
-          height: fabSize,
-          decoration: BoxDecoration(
-            shape: BoxShape.circle,
-            color: bg.withOpacity(0.82),
-            border: Border.all(color: color.withOpacity(0.55), width: 1),
-            boxShadow: [
-              BoxShadow(
-                color: T.shadow.withOpacity(0.52),
-                offset: const Offset(0, 6),
-                blurRadius: 14,
-              ),
-            ],
-          ),
-          child: AnimatedSwitcher(
-            duration: const Duration(milliseconds: 220),
-            transitionBuilder: (child, anim) =>
-                FadeTransition(opacity: anim, child: child),
-            child: Icon(
-              _isLocked ? Icons.lock_rounded : Icons.lock_open_rounded,
-              key: ValueKey(_isLocked),
-              color: color,
-              size: 24,
-            ),
-          ),
-        ),
-      ),
+    return FloatingLockToggle(
+      isLocked: isLocked,
+      isDragging: _isDraggingLockFab,
+      position: _lockFabPos!,
+      size: fabSize,
+      onTap: () {
+        unawaited(_toggleLock());
+      },
+      onPanStart: (_) {
+        setState(() => _isDraggingLockFab = true);
+      },
+      onPanUpdate: (details) {
+        setState(() {
+          _lockFabPos = _clampLockFab(
+            _lockFabPos! + details.delta,
+            screen,
+            pad,
+            fabSize,
+          );
+        });
+        lockController.setFabPosition(_lockFabPos!);
+      },
+      onPanEnd: (_) {
+        setState(() {
+          _lockFabPos = _snapLockFabToEdge(_lockFabPos!, screen, pad, fabSize);
+          _isDraggingLockFab = false;
+        });
+        lockController.setFabPosition(_lockFabPos!);
+        HapticFeedback.selectionClick();
+      },
     );
   }
 
@@ -476,7 +456,7 @@ class _LockerMapScreenState extends State<LockerMapScreen>
                             width: double.infinity,
                             padding: const EdgeInsets.symmetric(
                               horizontal: 12,
-                              vertical: 11,
+                              vertical: 12,
                             ),
                             decoration: BoxDecoration(
                               color: T.surfaceAlt,
@@ -491,7 +471,7 @@ class _LockerMapScreenState extends State<LockerMapScreen>
                                       ? 'No location assigned'
                                       : widget.lockerLocation,
                                   style: const TextStyle(
-                                    fontSize: 20,
+                                    fontSize: 21,
                                     fontWeight: FontWeight.w800,
                                     color: T.textPrimary,
                                     letterSpacing: -0.2,
@@ -505,37 +485,13 @@ class _LockerMapScreenState extends State<LockerMapScreen>
                                     color: T.textSecondary,
                                   ),
                                 ),
-                              ],
-                            ),
-                          ),
-                          const SizedBox(height: 12),
-                          Container(
-                            width: double.infinity,
-                            padding: const EdgeInsets.symmetric(
-                              horizontal: 12,
-                              vertical: 10,
-                            ),
-                            decoration: BoxDecoration(
-                              color: T.surfaceAlt,
-                              borderRadius: BorderRadius.circular(T.r12),
-                              border: Border.all(
-                                color: T.border.withOpacity(0.9),
-                                width: 1,
-                              ),
-                            ),
-                            child: Column(
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              children: [
-                                const Text(
-                                  'MAP GUIDANCE',
-                                  style: TextStyle(
-                                    fontSize: 10,
-                                    fontWeight: FontWeight.w700,
-                                    color: T.textMuted,
-                                    letterSpacing: 1.1,
-                                  ),
+                                const SizedBox(height: 10),
+                                Divider(
+                                  color: T.border.withOpacity(0.85),
+                                  thickness: 1,
+                                  height: 1,
                                 ),
-                                const SizedBox(height: 8),
+                                const SizedBox(height: 10),
                                 Wrap(
                                   spacing: 8,
                                   runSpacing: 8,
@@ -559,7 +515,7 @@ class _LockerMapScreenState extends State<LockerMapScreen>
                                   ),
                                   style: const TextStyle(
                                     fontSize: 12,
-                                    fontWeight: FontWeight.w600,
+                                    fontWeight: FontWeight.w500,
                                     color: T.textSecondary,
                                     height: 1.35,
                                   ),
