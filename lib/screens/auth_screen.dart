@@ -420,6 +420,7 @@ class _AuthScreenState extends State<AuthScreen>
                                     hint: 'T.I.P. Quezon City',
                                     action: TextInputAction.next,
                                     validator: (v) => _required(v, 'Campus'),
+                                    enabled: _isLoginMode,
                                   ),
                                 ),
                               ],
@@ -611,6 +612,7 @@ class _LineField extends StatelessWidget {
     this.onToggleObscure,
     this.onFieldSubmitted,
     this.onChanged,
+    this.enabled = true,
   });
 
   final TextEditingController controller;
@@ -623,6 +625,7 @@ class _LineField extends StatelessWidget {
   final VoidCallback? onToggleObscure;
   final ValueChanged<String>? onFieldSubmitted;
   final ValueChanged<String>? onChanged;
+  final bool enabled;
 
   @override
   Widget build(BuildContext context) {
@@ -646,6 +649,7 @@ class _LineField extends StatelessWidget {
           obscureText: obscure,
           onFieldSubmitted: onFieldSubmitted,
           onChanged: onChanged,
+          enabled: enabled,
           style: const TextStyle(
             color: T.textPrimary,
             fontSize: 18,

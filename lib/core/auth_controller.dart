@@ -139,6 +139,7 @@ class AuthController extends ChangeNotifier {
 
   final Map<String, _StoredAccount> _accounts = {};
   final Map<String, _FirebaseLoginProfile> _firebaseLoginProfiles = {};
+  final List<String> _recentlyLoggedInEmails = [];
   final Map<String, List<DateTime>> _failedLoginAttemptsByEmail = {};
   final Map<String, DateTime> _loginLockoutUntilByEmail = {};
   final Map<String, List<_PendingAuthLogEvent>> _pendingAuthLogsByEmail = {};
@@ -169,7 +170,7 @@ class AuthController extends ChangeNotifier {
 
   List<String> get registeredEmails {
     if (_useFirebase) {
-      return _firebaseLoginProfiles.keys.toList(growable: false);
+      return _recentlyLoggedInEmails.toList(growable: false);
     }
     return _accounts.keys.toList(growable: false);
   }
@@ -715,6 +716,9 @@ class AuthController extends ChangeNotifier {
 
       _currentUser = account.user;
       _resetFailedLoginState(normalizedEmail);
+      if (!_recentlyLoggedInEmails.contains(normalizedEmail)) {
+        _recentlyLoggedInEmails.add(normalizedEmail);
+      }
       await _persist();
       await _logAuthEvent(
         email: normalizedEmail,
@@ -816,36 +820,9 @@ class AuthController extends ChangeNotifier {
   Future<void> _warmFirebaseCaches() async {
     try {
       await ensureLockerInventory();
-      await _loadFirebaseLoginProfiles();
       notifyListeners();
     } catch (_) {
       // Keep app usable even if cache warmup fails.
-    }
-  }
-
-  Future<void> _loadFirebaseLoginProfiles() async {
-    _firebaseLoginProfiles.clear();
-    try {
-      final snapshot = await _firestore!
-          .collection(_usersCollection)
-          .limit(200)
-          .get();
-      for (final doc in snapshot.docs) {
-        final data = doc.data();
-        final email = (data['email'] as String? ?? '').trim().toLowerCase();
-        if (email.isEmpty) {
-          continue;
-        }
-        final user = _fromFirebaseUserData(doc.id, data);
-        final activeLockerId = (data['active_locker_id'] as String? ?? '')
-            .trim();
-        _firebaseLoginProfiles[email] = _FirebaseLoginProfile(
-          user: user,
-          hasActiveLocker: activeLockerId.isNotEmpty,
-        );
-      }
-    } catch (_) {
-      // Keep UI functional even when users listing is blocked by rules.
     }
   }
 
@@ -988,6 +965,9 @@ class AuthController extends ChangeNotifier {
       final activeLockerId = (data['active_locker_id'] as String? ?? '').trim();
 
       _currentUser = _fromFirebaseUserData(authUser.uid, data);
+      if (!_recentlyLoggedInEmails.contains(normalizedEmail)) {
+        _recentlyLoggedInEmails.add(normalizedEmail);
+      }
       _firebaseLoginProfiles[normalizedEmail] = _FirebaseLoginProfile(
         user: _currentUser!,
         hasActiveLocker: activeLockerId.isNotEmpty,
