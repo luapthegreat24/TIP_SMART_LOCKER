@@ -221,51 +221,9 @@ class AuthController extends ChangeNotifier {
   }
 
   Future<void> ensureLockerInventory() async {
-    if (!_useFirebase) {
-      return;
-    }
-    final firestore = _firestore;
-    if (firestore == null) {
-      return;
-    }
-
-    final existing = await firestore.collection('lockers').get();
-    final existingIds = existing.docs.map((doc) => doc.id).toSet();
-
-    final floorCodes = [('Ground Floor', 'G'), ('2nd Floor', '2F')];
-
-    final batch = firestore.batch();
-    var created = 0;
-    for (var building = 1; building <= 9; building++) {
-      for (final (floorLabel, floorCode) in floorCodes) {
-        for (var lockerNumber = 1; lockerNumber <= 5; lockerNumber++) {
-          final lockerId =
-              'B$building-$floorCode-${lockerNumber.toString().padLeft(2, '0')}';
-          if (existingIds.contains(lockerId)) {
-            continue;
-          }
-
-          final ref = firestore.collection('lockers').doc(lockerId);
-          batch.set(ref, {
-            'locker_id': lockerId,
-            'locker_number': lockerId,
-            'building_number': building,
-            'floor': floorLabel,
-            'floor_code': floorCode,
-            'location': 'Building $building',
-            'locker_slot': lockerNumber,
-            'is_occupied': false,
-            'status': 'functional',
-            'current_user_id': '',
-          });
-          created++;
-        }
-      }
-    }
-
-    if (created > 0) {
-      await batch.commit();
-    }
+    // Inventory is now managed manually in Firestore for prototype control.
+    // Intentionally no-op to avoid auto-recreating bulk locker documents.
+    return;
   }
 
   Stream<List<LockerBuildingAvailability>> watchBuildingAvailability() {
@@ -335,6 +293,81 @@ class AuthController extends ChangeNotifier {
                 ..sort((a, b) => a.lockerNumber.compareTo(b.lockerNumber));
           return slots;
         });
+  }
+
+  Stream<bool> watchLockerLockedState({required String lockerId}) {
+    final firestore = _firestore;
+    final trimmedLockerId = lockerId.trim();
+    if (!_useFirebase || firestore == null || trimmedLockerId.isEmpty) {
+      return const Stream<bool>.empty();
+    }
+
+    return firestore
+        .collection(_lockersCollection)
+        .doc(trimmedLockerId)
+        .snapshots()
+        .map((snapshot) {
+          final data = snapshot.data();
+          if (data == null) {
+            return true;
+          }
+
+          final lockState = (data['lock_state'] as String? ?? '').trim();
+          if (lockState == 'locked') {
+            return true;
+          }
+          if (lockState == 'unlocked') {
+            return false;
+          }
+
+          final status = (data['status'] as String? ?? '').trim();
+          if (status == 'locked') {
+            return true;
+          }
+          if (status == 'unlocked') {
+            return false;
+          }
+
+          return true;
+        })
+        .handleError((error, stack) {
+          debugPrint('watchLockerLockedState stream error: $error');
+        });
+  }
+
+  Future<String?> setLockerLockState({
+    required String lockerId,
+    required bool locked,
+    String source = 'mobile_app',
+    String uid = '',
+  }) async {
+    final firestore = _firestore;
+    final trimmedLockerId = lockerId.trim();
+    if (!_useFirebase || firestore == null) {
+      return 'Locker control is only available in Firebase mode.';
+    }
+    if (trimmedLockerId.isEmpty) {
+      return 'No assigned locker found for this user.';
+    }
+
+    final value = locked ? 'locked' : 'unlocked';
+    try {
+      await firestore.collection(_lockersCollection).doc(trimmedLockerId).set({
+        'status': value,
+        'lock_state': value,
+        'last_source': source,
+        'uid': uid,
+        'updated_at': FieldValue.serverTimestamp(),
+      }, SetOptions(merge: true));
+      return null;
+    } on FirebaseException catch (e) {
+      if (e.code == 'permission-denied') {
+        return 'Firestore denied locker control. Check security rules.';
+      }
+      return e.message ?? 'Failed to update locker state.';
+    } catch (_) {
+      return 'Failed to update locker state.';
+    }
   }
 
   Stream<Map<String, int>> watchFloorAvailability({
@@ -767,6 +800,71 @@ class AuthController extends ChangeNotifier {
     }
   }
 
+  Future<String?> deleteAccount() async {
+    if (!_useFirebase) {
+      return 'Account deletion is only available in Firebase mode.';
+    }
+
+    final authUser = _auth?.currentUser;
+    if (authUser == null) {
+      return 'You are not logged in.';
+    }
+
+    _setBusy(true);
+    try {
+      final userId = authUser.uid;
+      final profile = _currentUser;
+      final lockerId = (profile?.activeLockerId ?? '').trim();
+
+      await _releaseLockerAndCloseAssignments(
+        userId: userId,
+        lockerId: lockerId,
+      );
+
+      await _logAuthEvent(
+        email: profile?.email ?? (authUser.email ?? '').trim().toLowerCase(),
+        userId: userId,
+        lockerId: lockerId,
+        eventType: 'ACCOUNT_DELETED',
+        status: 'success',
+        details: 'User deleted account and released locker.',
+        source: 'settings_screen',
+      );
+
+      try {
+        await _firestore!.collection(_usersCollection).doc(userId).delete();
+      } on FirebaseException catch (e) {
+        if (e.code != 'not-found') {
+          rethrow;
+        }
+      }
+
+      await authUser.delete();
+      await _auth!.signOut();
+
+      if (profile != null) {
+        _firebaseLoginProfiles.remove(profile.email);
+      }
+      _currentUser = null;
+      notifyListeners();
+      return null;
+    } on FirebaseAuthException catch (e) {
+      if (e.code == 'requires-recent-login') {
+        return 'For security, please sign in again, then delete your account.';
+      }
+      return e.message ?? 'Failed to delete account.';
+    } on FirebaseException catch (e) {
+      if (e.code == 'permission-denied') {
+        return 'Firestore denied account deletion. Check security rules.';
+      }
+      return e.message ?? 'Failed to delete account.';
+    } catch (_) {
+      return 'Failed to delete account.';
+    } finally {
+      _setBusy(false);
+    }
+  }
+
   Future<void> _persist() async {
     if (_useFirebase) {
       notifyListeners();
@@ -793,6 +891,12 @@ class AuthController extends ChangeNotifier {
   Future<void> _restoreFirebaseSession() async {
     _setBusy(true);
     try {
+      if (kIsWeb) {
+        // Explicitly clear persisted browser auth session so stale remembered
+        // accounts do not auto-login after cache resets.
+        await _auth!.signOut();
+      }
+
       final authUser = _auth!.currentUser;
       if (authUser == null) {
         _currentUser = null;
@@ -819,7 +923,6 @@ class AuthController extends ChangeNotifier {
 
   Future<void> _warmFirebaseCaches() async {
     try {
-      await ensureLockerInventory();
       notifyListeners();
     } catch (_) {
       // Keep app usable even if cache warmup fails.
@@ -836,9 +939,8 @@ class AuthController extends ChangeNotifier {
   }) async {
     _setBusy(true);
     UserCredential? credentials;
+    final normalizedEmail = email.trim().toLowerCase();
     try {
-      final normalizedEmail = email.trim().toLowerCase();
-
       credentials = await _auth!.createUserWithEmailAndPassword(
         email: normalizedEmail,
         password: password,
@@ -887,6 +989,16 @@ class AuthController extends ChangeNotifier {
       debugPrint(
         'Firebase signup failed: code=${e.code}, message=${e.message}',
       );
+      if (e.code == 'email-already-in-use') {
+        return _recoverExistingAuthAccountForSignup(
+          email: normalizedEmail,
+          password: password,
+          firstName: firstName,
+          lastName: lastName,
+          studentId: studentId,
+          campus: campus,
+        );
+      }
       return _friendlyAuthError(e, duringSignUp: true);
     } on FirebaseException catch (e, st) {
       debugPrint(
@@ -922,6 +1034,82 @@ class AuthController extends ChangeNotifier {
       return 'Sign up failed. Please try again.';
     } finally {
       _setBusy(false);
+    }
+  }
+
+  Future<String?> _recoverExistingAuthAccountForSignup({
+    required String email,
+    required String password,
+    required String firstName,
+    required String lastName,
+    required String studentId,
+    required String campus,
+  }) async {
+    try {
+      final credentials = await _auth!.signInWithEmailAndPassword(
+        email: email,
+        password: password,
+      );
+
+      final authUser = credentials.user;
+      if (authUser == null) {
+        return 'An account with this email already exists. Log in instead.';
+      }
+
+      final userRef = _firestore!.collection(_usersCollection).doc(authUser.uid);
+      final userSnapshot = await userRef.get();
+      if (!userSnapshot.exists || userSnapshot.data() == null) {
+        await _createUserProfileInFirestore(
+          userId: authUser.uid,
+          firstName: firstName,
+          lastName: lastName,
+          email: email,
+          studentId: studentId,
+          campus: campus,
+        );
+      }
+
+      final refreshed = await _readFirebaseUser(authUser.uid);
+      if (refreshed == null) {
+        return 'Account exists but profile setup failed. Please try again.';
+      }
+
+      _currentUser = refreshed;
+      _firebaseLoginProfiles[email] = _FirebaseLoginProfile(
+        user: refreshed,
+        hasActiveLocker: refreshed.activeLockerId.trim().isNotEmpty,
+      );
+      if (!_recentlyLoggedInEmails.contains(email)) {
+        _recentlyLoggedInEmails.add(email);
+      }
+
+      await _logAuthEvent(
+        email: email,
+        userId: refreshed.userId,
+        lockerId: refreshed.activeLockerId,
+        eventType: 'SIGNUP_RECOVERED',
+        status: 'success',
+        details:
+            'Recovered existing Firebase Auth account and restored profile.',
+        source: 'signup_recovery',
+      );
+
+      await _persist();
+      return null;
+    } on FirebaseAuthException catch (e) {
+      if (e.code == 'wrong-password' ||
+          e.code == 'invalid-credential' ||
+          e.code == 'user-not-found') {
+        return 'This email is already registered. Please log in with the correct password.';
+      }
+      return _friendlyAuthError(e, duringSignUp: false);
+    } on FirebaseException catch (e) {
+      if (e.code == 'permission-denied') {
+        return 'Account exists but Firestore denied profile recovery. Check rules.';
+      }
+      return e.message ?? 'Account exists, but recovery failed. Please log in.';
+    } catch (_) {
+      return 'Account exists, but recovery failed. Please log in.';
     }
   }
 
@@ -1196,7 +1384,11 @@ class AuthController extends ChangeNotifier {
       final lockerData = freshLocker.data();
       final isOccupied = (lockerData?['is_occupied'] as bool?) ?? true;
       final status = (lockerData?['status'] as String?) ?? 'broken';
-      final occupiedBy = (lockerData?['current_user_id'] as String? ?? '')
+        final assignedUserId =
+          (lockerData?['assigned_user_id'] as String? ?? '').trim();
+        final occupiedBy = assignedUserId.isNotEmpty
+          ? assignedUserId
+          : (lockerData?['current_user_id'] as String? ?? '')
           .trim();
       final occupiedByDifferentUser = isOccupied && occupiedBy != userId;
       if (occupiedByDifferentUser || status != 'functional') {
@@ -1209,12 +1401,23 @@ class AuthController extends ChangeNotifier {
             .doc(previousLockerId);
         final previousLockerSnapshot = await transaction.get(previousLockerRef);
         final previousLockerData = previousLockerSnapshot.data();
-        final previousCurrentUser =
-            (previousLockerData?['current_user_id'] as String? ?? '').trim();
-        if (previousLockerSnapshot.exists && previousCurrentUser == userId) {
+        final previousAssignedUser =
+            (previousLockerData?['assigned_user_id'] as String? ?? '').trim();
+        final ownedByUser =
+            previousAssignedUser == userId || previousAssignedUser.isEmpty;
+        if (previousLockerSnapshot.exists && ownedByUser) {
           transaction.update(previousLockerRef, {
             'is_occupied': false,
-            'current_user_id': '',
+            'is_assigned': false,
+            'assigned_user_id': '',
+            'status': 'functional',
+            'lock_state': 'locked',
+            'last_source': 'locker_reassign',
+            'updated_at': FieldValue.serverTimestamp(),
+            'current_user_id': FieldValue.delete(),
+            'current_user_email': FieldValue.delete(),
+            'assigned_user_name': FieldValue.delete(),
+            'assigned_to': FieldValue.delete(),
           });
         }
       }
@@ -1233,7 +1436,15 @@ class AuthController extends ChangeNotifier {
 
       transaction.update(lockerRef, {
         'is_occupied': true,
-        'current_user_id': userId,
+        'is_assigned': true,
+        'assigned_user_id': userId,
+        'status': 'functional',
+        'last_source': 'locker_assignment',
+        'updated_at': FieldValue.serverTimestamp(),
+        'current_user_id': FieldValue.delete(),
+        'current_user_email': FieldValue.delete(),
+        'assigned_user_name': FieldValue.delete(),
+        'assigned_to': FieldValue.delete(),
       });
 
       transaction.set(assignmentRef, {
@@ -1246,6 +1457,71 @@ class AuthController extends ChangeNotifier {
     });
 
     return true;
+  }
+
+  Future<void> _releaseLockerAndCloseAssignments({
+    required String userId,
+    required String lockerId,
+  }) async {
+    final userRef = _firestore!.collection(_usersCollection).doc(userId);
+    final resolvedLockerId = lockerId.trim();
+    final lockerRef = resolvedLockerId.isEmpty
+        ? null
+        : _firestore.collection(_lockersCollection).doc(resolvedLockerId);
+
+    final activeAssignments = await _firestore
+        .collection(_assignmentsCollection)
+        .where('user_id', isEqualTo: userId)
+        .where('end_date', isNull: true)
+        .get();
+
+    await _firestore.runTransaction((transaction) async {
+      final userSnapshot = await transaction.get(userRef);
+      final userData = userSnapshot.data();
+      final userLockerId = (userData?['active_locker_id'] as String? ?? '')
+          .trim();
+
+      final lockerIdToRelease = userLockerId.isNotEmpty
+          ? userLockerId
+          : resolvedLockerId;
+
+      if (lockerIdToRelease.isNotEmpty) {
+        final targetLockerRef =
+            lockerRef != null && lockerRef.id == lockerIdToRelease
+            ? lockerRef
+            : _firestore.collection(_lockersCollection).doc(lockerIdToRelease);
+        final lockerSnapshot = await transaction.get(targetLockerRef);
+        if (lockerSnapshot.exists) {
+          transaction.set(targetLockerRef, {
+            'is_occupied': false,
+            'is_assigned': false,
+            'assigned_user_id': '',
+            'uid': '',
+            'status': 'functional',
+            'lock_state': 'locked',
+            'last_source': 'account_delete',
+            'updated_at': FieldValue.serverTimestamp(),
+            'current_user_id': FieldValue.delete(),
+            'current_user_email': FieldValue.delete(),
+            'assigned_user_name': FieldValue.delete(),
+            'assigned_to': FieldValue.delete(),
+          }, SetOptions(merge: true));
+        }
+      }
+
+      transaction.set(userRef, {
+        'active_locker_id': '',
+        'locker_location': '',
+      }, SetOptions(merge: true));
+
+      for (final doc in activeAssignments.docs) {
+        transaction.update(doc.reference, {
+          'end_date': FieldValue.serverTimestamp(),
+          'ended_by': 'account_delete',
+          'status': 'terminated',
+        });
+      }
+    });
   }
 
   Future<void> logSettingChange({

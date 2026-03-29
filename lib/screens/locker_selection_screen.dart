@@ -34,7 +34,6 @@ class _LockerSelectionScreenState extends State<LockerSelectionScreen> {
   @override
   void initState() {
     super.initState();
-    widget.controller.ensureLockerInventory();
     _subscribeBuildings();
   }
 
@@ -68,6 +67,33 @@ class _LockerSelectionScreenState extends State<LockerSelectionScreen> {
         }
       });
     });
+  }
+
+  Future<void> _goBack() async {
+    if (Navigator.of(context).canPop()) {
+      Navigator.of(context).pop();
+      return;
+    }
+
+    await widget.controller.logout();
+  }
+
+  void _refreshAvailability() {
+    setState(() {
+      _isLoadingBuildings = true;
+      _isLoadingFloors = _selectedBuilding != null;
+      _isLoadingLockers = _selectedBuilding != null && _selectedFloor != null;
+    });
+
+    _subscribeBuildings();
+    final building = _selectedBuilding;
+    final floor = _selectedFloor;
+    if (building != null) {
+      _subscribeFloors(building);
+      if (floor != null) {
+        _subscribeLockers(building, floor);
+      }
+    }
   }
 
   void _onSelectBuilding(int buildingNumber) {
@@ -235,13 +261,83 @@ class _LockerSelectionScreenState extends State<LockerSelectionScreen> {
             }
 
             if (_buildings.isEmpty) {
-              return const Center(
+              return Center(
                 child: Padding(
-                  padding: EdgeInsets.all(24),
-                  child: Text(
-                    'No buildings have available lockers right now.',
-                    textAlign: TextAlign.center,
-                    style: TextStyle(fontSize: 14, color: T.textSecondary),
+                  padding: const EdgeInsets.all(24),
+                  child: Container(
+                    width: 420,
+                    padding: const EdgeInsets.all(18),
+                    decoration: BoxDecoration(
+                      color: T.surface,
+                      borderRadius: BorderRadius.circular(T.r16),
+                      border: Border.all(color: T.border, width: T.strokeSm),
+                    ),
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Container(
+                          width: 56,
+                          height: 56,
+                          decoration: BoxDecoration(
+                            color: T.accentDim,
+                            borderRadius: BorderRadius.circular(T.r16),
+                            border: Border.all(
+                              color: T.accent.withOpacity(0.3),
+                              width: T.strokeSm,
+                            ),
+                          ),
+                          child: const Icon(
+                            Icons.meeting_room_outlined,
+                            color: T.accent,
+                            size: 28,
+                          ),
+                        ),
+                        const SizedBox(height: 12),
+                        const Text(
+                          'No available lockers right now',
+                          textAlign: TextAlign.center,
+                          style: TextStyle(
+                            fontSize: 16,
+                            fontWeight: FontWeight.w800,
+                            color: T.textPrimary,
+                          ),
+                        ),
+                        const SizedBox(height: 8),
+                        const Text(
+                          'All lockers are currently occupied. You can refresh to check again or go back.',
+                          textAlign: TextAlign.center,
+                          style: TextStyle(
+                            fontSize: 12,
+                            color: T.textSecondary,
+                            height: 1.4,
+                          ),
+                        ),
+                        const SizedBox(height: 14),
+                        Row(
+                          children: [
+                            Expanded(
+                              child: OutlinedButton.icon(
+                                onPressed: _goBack,
+                                icon: const Icon(Icons.arrow_back_rounded),
+                                label: const Text('Back'),
+                              ),
+                            ),
+                            const SizedBox(width: 10),
+                            Expanded(
+                              child: FilledButton.icon(
+                                onPressed: _refreshAvailability,
+                                style: FilledButton.styleFrom(
+                                  backgroundColor: T.accent,
+                                  foregroundColor: T.bg,
+                                ),
+                                icon: const Icon(Icons.refresh_rounded),
+                                label: const Text('Refresh'),
+                              ),
+                            ),
+                          ],
+                        ),
+                      ],
+                    ),
                   ),
                 ),
               );
@@ -353,14 +449,71 @@ class _LockerSelectionScreenState extends State<LockerSelectionScreen> {
                         ),
                       )
                     else if (_lockers.isEmpty)
-                      const Padding(
-                        padding: EdgeInsets.symmetric(vertical: 8),
-                        child: Text(
-                          'No available lockers on this floor. Please choose another floor.',
-                          style: TextStyle(
-                            fontSize: 12,
-                            color: T.textSecondary,
+                      Container(
+                        width: double.infinity,
+                        padding: const EdgeInsets.all(14),
+                        decoration: BoxDecoration(
+                          color: T.surface,
+                          borderRadius: BorderRadius.circular(T.r12),
+                          border: Border.all(
+                            color: T.border,
+                            width: T.strokeSm,
                           ),
+                        ),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Row(
+                              children: const [
+                                Icon(
+                                  Icons.info_outline_rounded,
+                                  color: T.textSecondary,
+                                  size: 18,
+                                ),
+                                SizedBox(width: 8),
+                                Expanded(
+                                  child: Text(
+                                    'No available lockers on this floor.',
+                                    style: TextStyle(
+                                      fontSize: 13,
+                                      fontWeight: FontWeight.w700,
+                                      color: T.textPrimary,
+                                    ),
+                                  ),
+                                ),
+                              ],
+                            ),
+                            const SizedBox(height: 6),
+                            const Text(
+                              'Try another floor or refresh availability.',
+                              style: TextStyle(
+                                fontSize: 12,
+                                color: T.textSecondary,
+                              ),
+                            ),
+                            const SizedBox(height: 12),
+                            Wrap(
+                              spacing: 8,
+                              runSpacing: 8,
+                              children: [
+                                OutlinedButton.icon(
+                                  onPressed: () {
+                                    setState(() {
+                                      _selectedFloor = null;
+                                      _lockers = const [];
+                                    });
+                                  },
+                                  icon: const Icon(Icons.layers_outlined),
+                                  label: const Text('Choose Floor'),
+                                ),
+                                OutlinedButton.icon(
+                                  onPressed: _refreshAvailability,
+                                  icon: const Icon(Icons.refresh_rounded),
+                                  label: const Text('Refresh'),
+                                ),
+                              ],
+                            ),
+                          ],
                         ),
                       )
                     else

@@ -10,6 +10,7 @@ class SettingsScreen extends StatelessWidget {
   final VoidCallback onBack;
   final AppUser user;
   final Future<void> Function() onLogout;
+  final Future<String?> Function() onDeleteAccount;
   final double contentBottomPadding;
   final bool notifEnabled;
   final bool autoLock;
@@ -22,12 +23,69 @@ class SettingsScreen extends StatelessWidget {
     required this.onBack,
     required this.user,
     required this.onLogout,
+    required this.onDeleteAccount,
     required this.contentBottomPadding,
     required this.notifEnabled,
     required this.autoLock,
     required this.onNotifChanged,
     required this.onAutoLockChanged,
   });
+
+  Future<void> _confirmDeleteAccount(BuildContext context) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) {
+        return AlertDialog(
+          backgroundColor: T.surface,
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(T.r12),
+            side: const BorderSide(color: T.border, width: T.strokeSm),
+          ),
+          title: const Text(
+            'Delete account?',
+            style: TextStyle(
+              color: T.textPrimary,
+              fontWeight: FontWeight.w800,
+              fontSize: 16,
+            ),
+          ),
+          content: const Text(
+            'This will permanently remove your account and release your assigned locker. This cannot be undone.',
+            style: TextStyle(color: T.textSecondary, fontSize: 13, height: 1.4),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(dialogContext).pop(false),
+              child: const Text('Cancel', style: TextStyle(color: T.textMuted)),
+            ),
+            FilledButton(
+              style: FilledButton.styleFrom(
+                backgroundColor: T.red,
+                foregroundColor: T.bg,
+              ),
+              onPressed: () => Navigator.of(dialogContext).pop(true),
+              child: const Text('Delete'),
+            ),
+          ],
+        );
+      },
+    );
+
+    if (confirmed != true) {
+      return;
+    }
+
+    final messenger = ScaffoldMessenger.of(context);
+    final result = await onDeleteAccount();
+    if (result != null) {
+      messenger.showSnackBar(SnackBar(content: Text(result)));
+      return;
+    }
+
+    messenger.showSnackBar(
+      const SnackBar(content: Text('Account deleted and locker released.')),
+    );
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -420,6 +478,33 @@ class SettingsScreen extends StatelessWidget {
                             icon: const Icon(Icons.logout_rounded),
                             label: const Text(
                               'Sign out',
+                              style: TextStyle(fontWeight: FontWeight.w800),
+                            ),
+                          ),
+                        ),
+                        const SizedBox(height: T.gap12),
+                        SizedBox(
+                          width: double.infinity,
+                          child: OutlinedButton.icon(
+                            onPressed: () => _confirmDeleteAccount(context),
+                            style: OutlinedButton.styleFrom(
+                              foregroundColor: T.red,
+                              side: BorderSide(
+                                color: T.red.withOpacity(0.35),
+                                width: T.strokeSm,
+                              ),
+                              backgroundColor: T.redDim.withOpacity(0.18),
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: 16,
+                                vertical: 14,
+                              ),
+                              shape: RoundedRectangleBorder(
+                                borderRadius: BorderRadius.circular(T.r12),
+                              ),
+                            ),
+                            icon: const Icon(Icons.delete_forever_rounded),
+                            label: const Text(
+                              'Delete account',
                               style: TextStyle(fontWeight: FontWeight.w800),
                             ),
                           ),

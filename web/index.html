@@ -1,7 +1,7 @@
-<!DOCTYPE html>
+<!doctype html>
 <html>
-<head>
-  <!--
+  <head>
+    <!--
     If you are serving your web app in a path other than the root, change the
     href value below to reflect the base path you are serving from.
 
@@ -14,26 +14,114 @@
     This is a placeholder for base href that will be replaced by the value of
     the `--base-href` argument provided to `flutter build`.
   -->
-  <base href="$FLUTTER_BASE_HREF">
+    <base href="$FLUTTER_BASE_HREF" />
 
-  <meta charset="UTF-8">
-  <meta content="IE=Edge" http-equiv="X-UA-Compatible">
-  <meta name="description" content="A new Flutter project.">
-  <meta name="theme-color" content="#0F0F14">
+    <meta charset="UTF-8" />
+    <meta content="IE=Edge" http-equiv="X-UA-Compatible" />
+    <meta name="description" content="A new Flutter project." />
+    <meta name="theme-color" content="#0F0F14" />
 
-  <!-- iOS meta tags & icons -->
-  <meta name="mobile-web-app-capable" content="yes">
-  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-  <meta name="apple-mobile-web-app-title" content="flutter_application_1">
-  <link rel="apple-touch-icon" href="icons/Icon-192.png">
+    <!-- iOS meta tags & icons -->
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta
+      name="apple-mobile-web-app-status-bar-style"
+      content="black-translucent"
+    />
+    <meta name="apple-mobile-web-app-title" content="flutter_application_1" />
+    <link rel="apple-touch-icon" href="icons/Icon-192.png" />
 
-  <!-- Favicon -->
-  <link rel="icon" type="image/png" href="favicon.png"/>
+    <!-- Favicon -->
+    <link rel="icon" type="image/png" href="favicon.png" />
 
-  <title>flutter_application_1</title>
-  <link rel="manifest" href="manifest.json">
-</head>
-<body style="background-color: #0F0F14; margin: 0;">
-  <script src="flutter_bootstrap.js" async></script>
-</body>
+    <title>flutter_application_1</title>
+    <link rel="manifest" href="manifest.json" />
+  </head>
+  <body style="background-color: #0f0f14; margin: 0">
+    <script>
+      (function () {
+        async function clearIndexedDbCaches() {
+          if (!window.indexedDB) {
+            return;
+          }
+
+          try {
+            if (indexedDB.databases) {
+              const dbs = await indexedDB.databases();
+              const targets = (dbs || [])
+                .map((db) => db.name)
+                .filter(Boolean)
+                .filter(
+                  (name) =>
+                    name.includes("firebase") ||
+                    name.includes("firestore") ||
+                    name.includes("flutter"),
+                );
+
+              await Promise.all(
+                targets.map(
+                  (name) =>
+                    new Promise((resolve) => {
+                      const req = indexedDB.deleteDatabase(name);
+                      req.onsuccess =
+                        req.onerror =
+                        req.onblocked =
+                          () => resolve();
+                    }),
+                ),
+              );
+            }
+          } catch (_) {}
+
+          // Fallback for browsers without indexedDB.databases().
+          const known = [
+            "firebaseLocalStorageDb",
+            "firebase-heartbeat-database",
+            "firestore/[DEFAULT]/tip-locker/main",
+          ];
+          await Promise.all(
+            known.map(
+              (name) =>
+                new Promise((resolve) => {
+                  const req = indexedDB.deleteDatabase(name);
+                  req.onsuccess = req.onerror = req.onblocked = () => resolve();
+                }),
+            ),
+          );
+        }
+
+        async function forceFreshLoad() {
+          if ("serviceWorker" in navigator) {
+            try {
+              const regs = await navigator.serviceWorker.getRegistrations();
+              await Promise.all(regs.map((reg) => reg.unregister()));
+            } catch (_) {}
+          }
+
+          if ("caches" in window) {
+            try {
+              const keys = await caches.keys();
+              await Promise.all(keys.map((key) => caches.delete(key)));
+            } catch (_) {}
+          }
+
+          try {
+            localStorage.clear();
+          } catch (_) {}
+
+          try {
+            sessionStorage.clear();
+          } catch (_) {}
+
+          await clearIndexedDbCaches();
+
+          const script = document.createElement("script");
+          script.src = "flutter_bootstrap.js";
+          script.async = false;
+          document.body.appendChild(script);
+        }
+
+        forceFreshLoad();
+      })();
+    </script>
+  </body>
 </html>

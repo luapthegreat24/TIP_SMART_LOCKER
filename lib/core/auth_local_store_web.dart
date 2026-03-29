@@ -5,7 +5,8 @@ import 'dart:html' as html;
 
 import 'auth_local_store.dart';
 
-const _storageKey = 'locker_app_auth';
+const _storageKey = 'locker_app_auth_v2';
+const _legacyStorageKey = 'locker_app_auth';
 
 AuthLocalStore createStore() => WebAuthLocalStore();
 
@@ -13,10 +14,14 @@ class WebAuthLocalStore implements AuthLocalStore {
   @override
   Future<void> clear() async {
     html.window.localStorage.remove(_storageKey);
+    html.window.localStorage.remove(_legacyStorageKey);
   }
 
   @override
   Future<Map<String, dynamic>?> read() async {
+    // Cleanup legacy cache key from older builds.
+    html.window.localStorage.remove(_legacyStorageKey);
+
     final raw = html.window.localStorage[_storageKey];
     if (raw == null || raw.trim().isEmpty) {
       return null;

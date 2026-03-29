@@ -24,10 +24,12 @@ ActivityItem _activityFromLog(LockerLogEntry log, int index) {
   final event = log.eventType.toUpperCase();
   final type = switch (event) {
     'MOBILE_UNLOCK' => ActivityType.mobileUnlock,
+    'MOBILE_LOCK' => ActivityType.manualLock,
     'RFID_UNLOCK' => ActivityType.rfidUnlock,
     'RFID_LOCK' => ActivityType.rfidLock,
     'AUTO_LOCK' => ActivityType.manualLock,
     'MANUAL_LOCK' => ActivityType.manualLock,
+    'LOCK' || 'UNLOCK' => ActivityType.system,
     'LOGIN_SUCCESS' ||
     'LOGIN_FAILED' ||
     'LOGOUT' ||
@@ -45,6 +47,8 @@ ActivityItem _activityFromLog(LockerLogEntry log, int index) {
     'MANUAL_LOCK' => 'Locked via Manual Lock',
     'MANUAL_UNLOCK' => 'Unlocked via Manual Lock',
     'AUTO_LOCK' => 'Locked automatically after inactivity',
+    'LOCK' => 'Locked by System',
+    'UNLOCK' => 'Unlocked by System',
     'LOGIN_SUCCESS' => 'Successful sign in',
     'LOGIN_FAILED' => 'Failed sign in attempt',
     'LOGIN_BLOCKED' => 'Sign in blocked due to lockout',
@@ -87,12 +91,14 @@ class LockerDashboardScreen extends StatefulWidget {
   final AuthController controller;
   final AppUser user;
   final Future<void> Function() onLogout;
+  final Future<String?> Function() onDeleteAccount;
 
   const LockerDashboardScreen({
     super.key,
     required this.controller,
     required this.user,
     required this.onLogout,
+    required this.onDeleteAccount,
   });
 
   @override
@@ -149,6 +155,7 @@ class _LockerDashboardScreenState extends State<LockerDashboardScreen>
   late final Animation<Color?> _lockBg;
   final LockToastOverlay _lockToastOverlay = LockToastOverlay();
   StreamSubscription<List<LockerLogEntry>>? _logsSubscription;
+  StreamSubscription<bool>? _lockerStateSubscription;
   Timer? _autoLockTimer;
 
   List<ActivityItem> _activities = const [];
@@ -198,6 +205,7 @@ class _LockerDashboardScreenState extends State<LockerDashboardScreen>
     _lockController.addListener(_onGlobalLockChanged);
 
     _subscribeToLogs();
+    _subscribeToLockerState();
   }
 
   @override
@@ -206,9 +214,27 @@ class _LockerDashboardScreenState extends State<LockerDashboardScreen>
     _lockController.removeListener(_onGlobalLockChanged);
     _lockToastOverlay.dispose();
     _logsSubscription?.cancel();
+    _lockerStateSubscription?.cancel();
     _entranceCtrl.dispose();
     _lockCtrl.dispose();
     super.dispose();
+  }
+
+  void _subscribeToLockerState() {
+    final lockerId = widget.user.activeLockerId.trim();
+    if (lockerId.isEmpty) {
+      return;
+    }
+
+    _lockerStateSubscription?.cancel();
+    _lockerStateSubscription = widget.controller
+        .watchLockerLockedState(lockerId: lockerId)
+        .listen((isLocked) {
+          if (!mounted) {
+            return;
+          }
+          _lockController.setLocked(isLocked);
+        });
   }
 
   void _onGlobalLockChanged() {
@@ -260,7 +286,8 @@ class _LockerDashboardScreenState extends State<LockerDashboardScreen>
     bool playHaptic = true,
   }) async {
     final wasLocked = _lockController.isLocked;
-    final isLocked = _lockController.toggle();
+    final isLocked = !wasLocked;
+    _lockController.setLocked(isLocked);
     if (playHaptic) {
       HapticFeedback.heavyImpact();
     }
@@ -277,6 +304,21 @@ class _LockerDashboardScreenState extends State<LockerDashboardScreen>
     final userId = widget.user.userId.trim();
     final lockerId = widget.user.activeLockerId.trim();
     if (userId.isNotEmpty && lockerId.isNotEmpty) {
+      final controlError = await widget.controller.setLockerLockState(
+        lockerId: lockerId,
+        locked: isLocked,
+        source: 'dashboard_fab',
+      );
+      if (controlError != null) {
+        _lockController.setLocked(wasLocked);
+        if (mounted) {
+          ScaffoldMessenger.of(context)
+            ..hideCurrentSnackBar()
+            ..showSnackBar(SnackBar(content: Text(controlError)));
+        }
+        return;
+      }
+
       await widget.controller.addLogEvent(
         userId: userId,
         lockerId: lockerId,
@@ -1097,6 +1139,7 @@ class _LockerDashboardScreenState extends State<LockerDashboardScreen>
                         onBack: () => _onTabPressed(0),
                         user: widget.user,
                         onLogout: widget.onLogout,
+                        onDeleteAccount: widget.onDeleteAccount,
                         contentBottomPadding: _contentBottomPadding,
                         notifEnabled: _notifEnabled,
                         autoLock: _autoLock,
@@ -1578,7 +1621,8 @@ class _ActivityLogPageState extends State<_ActivityLogPage>
   Future<void> _onToggleLockFromLogs() async {
     final lockController = context.read<LockerLockController>();
     final wasLocked = lockController.isLocked;
-    final isLocked = lockController.toggle();
+    final isLocked = !wasLocked;
+    lockController.setLocked(isLocked);
     HapticFeedback.heavyImpact();
 
     unawaited(
@@ -1588,6 +1632,24 @@ class _ActivityLogPageState extends State<_ActivityLogPage>
     final userId = widget.userId.trim();
     if (userId.isEmpty) {
       return;
+    }
+
+    final lockerId = widget.lockerId.trim();
+    if (lockerId.isNotEmpty) {
+      final controlError = await widget.controller.setLockerLockState(
+        lockerId: lockerId,
+        locked: isLocked,
+        source: 'activity_logs_fab',
+      );
+      if (controlError != null) {
+        lockController.setLocked(wasLocked);
+        if (mounted) {
+          ScaffoldMessenger.of(context)
+            ..hideCurrentSnackBar()
+            ..showSnackBar(SnackBar(content: Text(controlError)));
+        }
+        return;
+      }
     }
 
     await widget.controller.addLogEvent(
