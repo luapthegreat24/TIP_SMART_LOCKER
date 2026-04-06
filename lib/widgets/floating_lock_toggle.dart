@@ -46,11 +46,11 @@ class FloatingLockToggle extends StatelessWidget {
           height: size,
           decoration: BoxDecoration(
             shape: BoxShape.circle,
-            color: bg.withOpacity(0.82),
-            border: Border.all(color: color.withOpacity(0.55), width: 1),
+            color: bg.withValues(alpha: 0.82),
+            border: Border.all(color: color.withValues(alpha: 0.55), width: 1),
             boxShadow: [
               BoxShadow(
-                color: T.shadow.withOpacity(0.52),
+                color: T.shadow.withValues(alpha: 0.52),
                 offset: const Offset(0, 6),
                 blurRadius: 14,
               ),

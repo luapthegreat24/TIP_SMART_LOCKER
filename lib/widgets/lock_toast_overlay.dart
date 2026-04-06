@@ -2,6 +2,8 @@ import 'package:flutter/material.dart';
 
 import '../core/design_tokens.dart';
 
+enum LockToastState { progress, success, error }
+
 class LockToastOverlay {
   OverlayEntry? _entry;
   AnimationController? _controller;
@@ -19,10 +21,50 @@ class LockToastOverlay {
     required TickerProvider vsync,
     required bool isLocked,
   }) async {
+    await showState(
+      context: context,
+      vsync: vsync,
+      state: LockToastState.success,
+      title: isLocked ? 'Locker locked' : 'Locker unlocked',
+      isLocked: isLocked,
+      duration: const Duration(milliseconds: 1100),
+    );
+  }
+
+  Future<void> showState({
+    required BuildContext context,
+    required TickerProvider vsync,
+    required LockToastState state,
+    required String title,
+    bool isLocked = true,
+    String? detail,
+    Duration? duration,
+  }) async {
     final ticket = ++_ticket;
     final overlay = Overlay.of(context, rootOverlay: true);
-    final accent = isLocked ? T.green : T.red;
-    final accentBg = isLocked ? T.greenDim : T.redDim;
+
+    final Color accent = switch (state) {
+      LockToastState.progress => T.accent,
+      LockToastState.success => isLocked ? T.green : T.red,
+      LockToastState.error => T.amber,
+    };
+    final Color accentBg = switch (state) {
+      LockToastState.progress => T.accentDim,
+      LockToastState.success => isLocked ? T.greenDim : T.redDim,
+      LockToastState.error => T.amberDim,
+    };
+    final IconData icon = switch (state) {
+      LockToastState.progress =>
+        isLocked ? Icons.lock_clock_rounded : Icons.lock_open_rounded,
+      LockToastState.success =>
+        isLocked ? Icons.lock_rounded : Icons.lock_open_rounded,
+      LockToastState.error => Icons.warning_amber_rounded,
+    };
+    final holdDuration =
+        duration ??
+        (state == LockToastState.error
+            ? const Duration(milliseconds: 1800)
+            : const Duration(milliseconds: 1100));
 
     dispose();
 
@@ -64,12 +106,13 @@ class LockToastOverlay {
                     color: T.surfaceAlt,
                     borderRadius: BorderRadius.circular(T.r12),
                     border: Border.all(
-                      color: accent.withOpacity(0.25),
+                      color: accent.withValues(alpha: 0.25),
                       width: T.strokeSm,
                     ),
                   ),
                   child: Row(
                     mainAxisSize: MainAxisSize.min,
+                    crossAxisAlignment: CrossAxisAlignment.center,
                     children: [
                       Container(
                         width: 30,
@@ -78,21 +121,35 @@ class LockToastOverlay {
                           color: accentBg,
                           borderRadius: BorderRadius.circular(T.r8),
                         ),
-                        child: Icon(
-                          isLocked
-                              ? Icons.lock_rounded
-                              : Icons.lock_open_rounded,
-                          size: 17,
-                          color: accent,
-                        ),
+                        child: Icon(icon, size: 17, color: accent),
                       ),
                       const SizedBox(width: 12),
-                      Text(
-                        isLocked ? 'Locker locked' : 'Locker unlocked',
-                        style: const TextStyle(
-                          fontSize: 16,
-                          fontWeight: FontWeight.w700,
-                          color: T.textPrimary,
+                      Flexible(
+                        child: Column(
+                          mainAxisSize: MainAxisSize.min,
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              title,
+                              style: const TextStyle(
+                                fontSize: 16,
+                                fontWeight: FontWeight.w700,
+                                color: T.textPrimary,
+                              ),
+                            ),
+                            if (detail != null && detail.trim().isNotEmpty)
+                              Padding(
+                                padding: const EdgeInsets.only(top: 2),
+                                child: Text(
+                                  detail,
+                                  style: const TextStyle(
+                                    fontSize: 12,
+                                    color: T.textSecondary,
+                                    fontWeight: FontWeight.w500,
+                                  ),
+                                ),
+                              ),
+                          ],
                         ),
                       ),
                     ],
@@ -109,7 +166,7 @@ class LockToastOverlay {
     overlay.insert(entry);
 
     await controller.forward();
-    await Future<void>.delayed(const Duration(milliseconds: 1100));
+    await Future<void>.delayed(holdDuration);
 
     if (ticket != _ticket || _controller != controller) {
       return;

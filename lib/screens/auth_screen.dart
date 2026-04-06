@@ -79,7 +79,7 @@ class _AuthScreenState extends State<AuthScreen>
     final idx = i.clamp(0, _slides.length - 1);
     return AnimatedBuilder(
       animation: _slides[idx],
-      builder: (_, __) {
+      builder: (_, _) {
         final v = _slides[idx].value.clamp(0.0, 1.0);
         return Opacity(
           opacity: v,
@@ -155,7 +155,7 @@ class _AuthScreenState extends State<AuthScreen>
           backgroundColor: T.bg,
           body: Stack(
             children: [
-              // Halftone — same as dashboard
+              // Halftone Ã¢â‚¬â€ same as dashboard
               const Positioned.fill(
                 child: CustomPaint(painter: HalftonePainter()),
               ),
@@ -180,7 +180,7 @@ class _AuthScreenState extends State<AuthScreen>
                           child: Column(
                             crossAxisAlignment: CrossAxisAlignment.start,
                             children: [
-                              // ── [0] Wordmark — tiny, top-left ─────────────────
+                              // Ã¢â€â‚¬Ã¢â€â‚¬ [0] Wordmark Ã¢â‚¬â€ tiny, top-left Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
                               _slide(
                                 0,
                                 Row(
@@ -192,7 +192,7 @@ class _AuthScreenState extends State<AuthScreen>
                                         color: T.accentDim,
                                         borderRadius: BorderRadius.circular(8),
                                         border: Border.all(
-                                          color: T.accent.withOpacity(0.28),
+                                          color: T.accent.withValues(alpha: 0.28),
                                           width: T.strokeSm,
                                         ),
                                       ),
@@ -218,7 +218,7 @@ class _AuthScreenState extends State<AuthScreen>
 
                               const SizedBox(height: 48),
 
-                              // ── [1] Giant headline — owns the screen ──────────
+                              // Ã¢â€â‚¬Ã¢â€â‚¬ [1] Giant headline Ã¢â‚¬â€ owns the screen Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
                               _slide(
                                 1,
                                 AnimatedSwitcher(
@@ -255,7 +255,7 @@ class _AuthScreenState extends State<AuthScreen>
 
                               const SizedBox(height: 44),
 
-                              // ── [2–6] Fields — bottom-line only ───────────────
+                              // Ã¢â€â‚¬Ã¢â€â‚¬ [2Ã¢â‚¬â€œ6] Fields Ã¢â‚¬â€ bottom-line only Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
                               if (_isLoginMode &&
                                   registeredEmails.isNotEmpty) ...[
                                 _slide(
@@ -323,7 +323,7 @@ class _AuthScreenState extends State<AuthScreen>
                                               ),
                                           focusedBorder: UnderlineInputBorder(
                                             borderSide: BorderSide(
-                                              color: T.accent.withOpacity(0.6),
+                                              color: T.accent.withValues(alpha: 0.6),
                                               width: 1.5,
                                             ),
                                           ),
@@ -433,7 +433,7 @@ class _AuthScreenState extends State<AuthScreen>
                                   key: const Key('auth-password-field'),
                                   controller: _passwordCtrl,
                                   label: 'PASSWORD',
-                                  hint: '••••••',
+                                  hint: 'Enter password',
                                   obscure: _obscurePassword,
                                   action: _isLoginMode
                                       ? TextInputAction.done
@@ -462,7 +462,7 @@ class _AuthScreenState extends State<AuthScreen>
                                   _LineField(
                                     controller: _confirmPasswordCtrl,
                                     label: 'CONFIRM PASSWORD',
-                                    hint: '••••••',
+                                    hint: 'Re-enter password',
                                     obscure: _obscureConfirmPassword,
                                     action: TextInputAction.done,
                                     onToggleObscure: () => setState(
@@ -487,7 +487,7 @@ class _AuthScreenState extends State<AuthScreen>
                                 ),
                               ],
 
-                              // ── Mode switcher — lives below fields ────────────
+                              // Ã¢â€â‚¬Ã¢â€â‚¬ Mode switcher Ã¢â‚¬â€ lives below fields Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
                               const SizedBox(height: 28),
                               _slide(
                                 7,
@@ -521,7 +521,7 @@ class _AuthScreenState extends State<AuthScreen>
                                 ),
                               ),
 
-                              // ── Error ─────────────────────────────────────────
+                              // Ã¢â€â‚¬Ã¢â€â‚¬ Error Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
                               if (visibleErrorText != null) ...[
                                 const SizedBox(height: T.gap20),
                                 _slide(
@@ -552,7 +552,7 @@ class _AuthScreenState extends State<AuthScreen>
 
                               const SizedBox(height: 48),
 
-                              // ── Submit — only _layeredPanel on screen ─────────
+                              // Ã¢â€â‚¬Ã¢â€â‚¬ Submit Ã¢â‚¬â€ only _layeredPanel on screen Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
                               _slide(
                                 7,
                                 _SubmitButton(
@@ -564,7 +564,7 @@ class _AuthScreenState extends State<AuthScreen>
 
                               const SizedBox(height: 28),
 
-                              // ── Footnote ──────────────────────────────────────
+                              // Ã¢â€â‚¬Ã¢â€â‚¬ Footnote Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
                               _slide(
                                 7,
                                 Center(
@@ -594,10 +594,10 @@ class _AuthScreenState extends State<AuthScreen>
   }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-//  _LineField — bottom border only, no fill, no box
+// Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
+//  _LineField Ã¢â‚¬â€ bottom border only, no fill, no box
 //  The most stripped-back input possible while staying usable
-// ─────────────────────────────────────────────────────────────────────────────
+// Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
 
 class _LineField extends StatelessWidget {
   const _LineField({
@@ -659,13 +659,13 @@ class _LineField extends StatelessWidget {
           decoration: InputDecoration(
             hintText: hint,
             hintStyle: TextStyle(
-              color: T.textMuted.withOpacity(0.5),
+              color: T.textMuted.withValues(alpha: 0.5),
               fontSize: 18,
               fontWeight: FontWeight.w400,
             ),
             isDense: true,
             contentPadding: const EdgeInsets.only(bottom: 10, top: 8),
-            // Bottom line only — everything else invisible
+            // Bottom line only Ã¢â‚¬â€ everything else invisible
             border: const UnderlineInputBorder(
               borderSide: BorderSide(color: T.border, width: 1),
             ),
@@ -674,7 +674,7 @@ class _LineField extends StatelessWidget {
             ),
             focusedBorder: UnderlineInputBorder(
               borderSide: BorderSide(
-                color: T.accent.withOpacity(0.6),
+                color: T.accent.withValues(alpha: 0.6),
                 width: 1.5,
               ),
             ),
@@ -712,11 +712,11 @@ class _LineField extends StatelessWidget {
   }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-//  Submit — outline only, no fill, no shadow, no icon
+// Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
+//  Submit Ã¢â‚¬â€ outline only, no fill, no shadow, no icon
 //  Consistent with the line-field aesthetic: border is the only decoration
-//  Press: scale 0.97 + opacity dip — quiet, physical, minimal
-// ─────────────────────────────────────────────────────────────────────────────
+//  Press: scale 0.97 + opacity dip Ã¢â‚¬â€ quiet, physical, minimal
+// Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
 
 class _SubmitButton extends StatefulWidget {
   const _SubmitButton({
@@ -777,7 +777,7 @@ class _SubmitButtonState extends State<_SubmitButton>
       onTapCancel: () => _c.reverse(),
       child: AnimatedBuilder(
         animation: _c,
-        builder: (_, __) => Transform.scale(
+        builder: (_, _) => Transform.scale(
           scale: _scale.value,
           child: Opacity(
             opacity: _opacity.value,
@@ -786,7 +786,7 @@ class _SubmitButtonState extends State<_SubmitButton>
               width: double.infinity,
               height: 54,
               decoration: BoxDecoration(
-                // No fill — transparent, only the border speaks
+                // No fill Ã¢â‚¬â€ transparent, only the border speaks
                 color: Colors.transparent,
                 borderRadius: BorderRadius.circular(T.r12),
                 border: Border.all(color: T.border, width: T.stroke),

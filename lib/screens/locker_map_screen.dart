@@ -232,7 +232,7 @@ class _LockerMapScreenState extends State<LockerMapScreen>
                       _resolvedMapAssetPath!,
                       width: double.infinity,
                       fit: BoxFit.fitWidth,
-                      errorBuilder: (_, __, ___) =>
+                      errorBuilder: (_, _, _) =>
                           const SizedBox(height: 290, child: _MapPlaceholder()),
                     ),
             ),
@@ -244,33 +244,61 @@ class _LockerMapScreenState extends State<LockerMapScreen>
 
   Future<void> _toggleLock() async {
     final lockController = context.read<LockerLockController>();
-    final wasLocked = lockController.isLocked;
-    final isLocked = lockController.toggle();
+    final targetLocked = !lockController.isLocked;
     HapticFeedback.lightImpact();
-
-    // Map page owns the visible confirmation toast.
     unawaited(
-      _lockToastOverlay.show(context: context, vsync: this, isLocked: isLocked),
+      _lockToastOverlay.showState(
+        context: context,
+        vsync: this,
+        state: LockToastState.progress,
+        title: targetLocked
+            ? 'Locking in progress...'
+            : 'Unlocking in progress...',
+        detail: targetLocked
+            ? 'Waiting for sensor confirmation'
+            : 'Waiting for sensor confirmation',
+        isLocked: targetLocked,
+        duration: const Duration(milliseconds: 1400),
+      ),
     );
 
     final userId = widget.userId.trim();
     final lockerId = widget.assignedLockerId.trim();
     if (userId.isNotEmpty && lockerId.isNotEmpty) {
-      await widget.controller.addLogEvent(
-        userId: userId,
-        lockerId: lockerId,
-        eventType: wasLocked ? 'MOBILE_UNLOCK' : 'MOBILE_LOCK',
-        authMethod: 'Mobile App',
-        source: 'map_page_fab',
-        status: 'success',
-        details: wasLocked
-            ? 'Locker unlocked via map page toggle.'
-            : 'Locker locked via map page toggle.',
-        metadata: {
-          'state_before': wasLocked ? 'locked' : 'unlocked',
-          'state_after': isLocked ? 'locked' : 'unlocked',
-        },
+      final controlError = await widget.controller
+          .setLockerLockStateWithSensorValidation(
+            lockerId: lockerId,
+            locked: targetLocked,
+            source: 'map_page_fab',
+          );
+      if (!mounted) {
+        return;
+      }
+      if (controlError != null) {
+        unawaited(
+          _lockToastOverlay.showState(
+            context: context,
+            vsync: this,
+            state: LockToastState.error,
+            title: targetLocked ? 'Lock error' : 'Unlock error',
+            detail: controlError,
+            isLocked: targetLocked,
+          ),
+        );
+        return;
+      }
+
+      lockController.setLocked(targetLocked);
+      unawaited(
+        _lockToastOverlay.show(
+          context: context,
+          vsync: this,
+          isLocked: targetLocked,
+        ),
       );
+
+      // Lock/unlock activity logs are written by the ESP32 after physical action
+      // to avoid duplicate app-side and hardware-side entries.
     }
   }
 
@@ -487,7 +515,7 @@ class _LockerMapScreenState extends State<LockerMapScreen>
                                 ),
                                 const SizedBox(height: 10),
                                 Divider(
-                                  color: T.border.withOpacity(0.85),
+                                  color: T.border.withValues(alpha: 0.85),
                                   thickness: 1,
                                   height: 1,
                                 ),
@@ -670,7 +698,7 @@ class _LocationTag extends StatelessWidget {
         color: highlight ? T.accentDim : T.bg,
         borderRadius: BorderRadius.circular(T.r8),
         border: Border.all(
-          color: highlight ? T.accent.withOpacity(0.5) : T.border,
+          color: highlight ? T.accent.withValues(alpha: 0.5) : T.border,
           width: 1,
         ),
       ),

@@ -282,7 +282,7 @@ class _LockerSelectionScreenState extends State<LockerSelectionScreen> {
                             color: T.accentDim,
                             borderRadius: BorderRadius.circular(T.r16),
                             border: Border.all(
-                              color: T.accent.withOpacity(0.3),
+                              color: T.accent.withValues(alpha: 0.3),
                               width: T.strokeSm,
                             ),
                           ),
@@ -597,7 +597,7 @@ class _SelectableCard extends StatelessWidget {
         padding: const EdgeInsets.all(12),
         decoration: BoxDecoration(
           color: disabled
-              ? T.surfaceAlt.withOpacity(0.4)
+              ? T.surfaceAlt.withValues(alpha: 0.4)
               : selected
               ? T.accentDim
               : T.surface,

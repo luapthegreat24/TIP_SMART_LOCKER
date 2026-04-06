@@ -75,8 +75,11 @@ class SettingsScreen extends StatelessWidget {
       return;
     }
 
-    final messenger = ScaffoldMessenger.of(context);
     final result = await onDeleteAccount();
+    if (!context.mounted) {
+      return;
+    }
+    final messenger = ScaffoldMessenger.of(context);
     if (result != null) {
       messenger.showSnackBar(SnackBar(content: Text(result)));
       return;
@@ -228,7 +231,7 @@ class SettingsScreen extends StatelessWidget {
                                     color: T.accentDim,
                                     borderRadius: BorderRadius.circular(T.r16),
                                     border: Border.all(
-                                      color: T.accent.withOpacity(0.35),
+                                      color: T.accent.withValues(alpha: 0.35),
                                       width: T.strokeSm,
                                     ),
                                   ),
@@ -279,7 +282,9 @@ class SettingsScreen extends StatelessWidget {
                                             T.r8,
                                           ),
                                           border: Border.all(
-                                            color: T.green.withOpacity(0.3),
+                                            color: T.green.withValues(
+                                              alpha: 0.3,
+                                            ),
                                             width: T.strokeSm,
                                           ),
                                         ),
@@ -463,10 +468,10 @@ class SettingsScreen extends StatelessWidget {
                             style: OutlinedButton.styleFrom(
                               foregroundColor: T.red,
                               side: BorderSide(
-                                color: T.red.withOpacity(0.35),
+                                color: T.red.withValues(alpha: 0.35),
                                 width: T.strokeSm,
                               ),
-                              backgroundColor: T.redDim.withOpacity(0.28),
+                              backgroundColor: T.redDim.withValues(alpha: 0.28),
                               padding: const EdgeInsets.symmetric(
                                 horizontal: 16,
                                 vertical: 14,
@@ -490,10 +495,10 @@ class SettingsScreen extends StatelessWidget {
                             style: OutlinedButton.styleFrom(
                               foregroundColor: T.red,
                               side: BorderSide(
-                                color: T.red.withOpacity(0.35),
+                                color: T.red.withValues(alpha: 0.35),
                                 width: T.strokeSm,
                               ),
-                              backgroundColor: T.redDim.withOpacity(0.18),
+                              backgroundColor: T.redDim.withValues(alpha: 0.18),
                               padding: const EdgeInsets.symmetric(
                                 horizontal: 16,
                                 vertical: 14,
@@ -528,7 +533,10 @@ class SettingsScreen extends StatelessWidget {
       decoration: BoxDecoration(
         color: bg,
         borderRadius: BorderRadius.circular(T.r8),
-        border: Border.all(color: color.withOpacity(0.3), width: T.strokeSm),
+        border: Border.all(
+          color: color.withValues(alpha: 0.3),
+          width: T.strokeSm,
+        ),
       ),
       child: Icon(icon, color: color, size: 14),
     );

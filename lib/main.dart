@@ -17,8 +17,15 @@ Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
   await Firebase.initializeApp(options: DefaultFirebaseOptions.currentPlatform);
   if (kIsWeb) {
-    await FirebaseAuth.instance.setPersistence(Persistence.NONE);
-    await FirebaseAuth.instance.signOut();
+    // Best-effort web auth setup. Some browsers with strict tracking
+    // prevention can block storage calls and stall startup if awaited forever.
+    try {
+      await FirebaseAuth.instance
+          .setPersistence(Persistence.LOCAL)
+          .timeout(const Duration(seconds: 4));
+    } catch (e) {
+      debugPrint('Web auth persistence setup skipped: $e');
+    }
   }
   SystemChrome.setSystemUIOverlayStyle(
     const SystemUiOverlayStyle(

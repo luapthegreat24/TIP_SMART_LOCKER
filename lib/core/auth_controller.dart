@@ -119,6 +119,16 @@ class AuthController extends ChangeNotifier {
   static const String _logsCollection = 'logs';
   static const String _assignmentsCollection = 'assignments';
   static const String _authSecurityAuditCollection = 'auth_security_audit';
+  static const Duration _lockerCommandCooldown = Duration(seconds: 2);
+  static const Duration _lockerLockSettleDelay = Duration(milliseconds: 3500);
+  static const Duration _lockerUnlockSettleDelay = Duration(milliseconds: 2500);
+  static const Duration _lockerSensorConfirmTimeout = Duration(seconds: 8);
+  static const Set<String> _allowedLockerCommandSources = {
+    'dashboard_fab',
+    'map_page_fab',
+    'activity_logs_fab',
+    'mobile_app',
+  };
 
   AuthController({required AuthLocalStore store})
     : _store = store,
@@ -143,6 +153,7 @@ class AuthController extends ChangeNotifier {
   final Map<String, List<DateTime>> _failedLoginAttemptsByEmail = {};
   final Map<String, DateTime> _loginLockoutUntilByEmail = {};
   final Map<String, List<_PendingAuthLogEvent>> _pendingAuthLogsByEmail = {};
+  final Map<String, DateTime> _lastLockerCommandAtByLocker = {};
   Timer? _lockoutTicker;
   AppUser? _currentUser;
   bool _isReady = false;
@@ -312,7 +323,19 @@ class AuthController extends ChangeNotifier {
             return true;
           }
 
-          final lockState = (data['lock_state'] as String? ?? '').trim();
+          final magneticSensor = (data['magnetic_sensor'] as String? ?? '')
+              .trim()
+              .toLowerCase();
+          if (magneticSensor == 'closed') {
+            return true;
+          }
+          if (magneticSensor == 'open') {
+            return false;
+          }
+
+          final lockState = (data['lock_state'] as String? ?? '')
+              .trim()
+              .toLowerCase();
           if (lockState == 'locked') {
             return true;
           }
@@ -320,7 +343,7 @@ class AuthController extends ChangeNotifier {
             return false;
           }
 
-          final status = (data['status'] as String? ?? '').trim();
+          final status = (data['status'] as String? ?? '').trim().toLowerCase();
           if (status == 'locked') {
             return true;
           }
@@ -342,12 +365,35 @@ class AuthController extends ChangeNotifier {
     String uid = '',
   }) async {
     final firestore = _firestore;
+    final authUser = _auth?.currentUser;
+    final currentUser = _currentUser;
     final trimmedLockerId = lockerId.trim();
     if (!_useFirebase || firestore == null) {
       return 'Locker control is only available in Firebase mode.';
     }
+    if (authUser == null || currentUser == null) {
+      return 'You are not logged in.';
+    }
     if (trimmedLockerId.isEmpty) {
       return 'No assigned locker found for this user.';
+    }
+    if (currentUser.activeLockerId.trim() != trimmedLockerId) {
+      return 'You are not authorized to control this locker.';
+    }
+
+    final rateLimitError = _validateLockerCommandRateLimit(trimmedLockerId);
+    if (rateLimitError != null) {
+      return rateLimitError;
+    }
+
+    final normalizedSource = _normalizeLockerCommandSource(source);
+    final ownershipError = await _validateLockerOwnership(
+      firestore: firestore,
+      lockerId: trimmedLockerId,
+      currentUserId: authUser.uid,
+    );
+    if (ownershipError != null) {
+      return ownershipError;
     }
 
     final value = locked ? 'locked' : 'unlocked';
@@ -355,10 +401,14 @@ class AuthController extends ChangeNotifier {
       await firestore.collection(_lockersCollection).doc(trimmedLockerId).set({
         'status': value,
         'lock_state': value,
-        'last_source': source,
+        'last_source': normalizedSource,
         'uid': uid,
+        'requested_by_user_id': authUser.uid,
+        'command_nonce':
+            '${authUser.uid}_${DateTime.now().millisecondsSinceEpoch}',
         'updated_at': FieldValue.serverTimestamp(),
       }, SetOptions(merge: true));
+      _lastLockerCommandAtByLocker[trimmedLockerId] = DateTime.now();
       return null;
     } on FirebaseException catch (e) {
       if (e.code == 'permission-denied') {
@@ -368,6 +418,204 @@ class AuthController extends ChangeNotifier {
     } catch (_) {
       return 'Failed to update locker state.';
     }
+  }
+
+  Future<String?> setLockerLockStateWithSensorValidation({
+    required String lockerId,
+    required bool locked,
+    String source = 'mobile_app',
+    String uid = '',
+    Duration timeout = _lockerSensorConfirmTimeout,
+  }) async {
+    final commandError = await setLockerLockState(
+      lockerId: lockerId,
+      locked: locked,
+      source: source,
+      uid: uid,
+    );
+    if (commandError != null) {
+      return commandError;
+    }
+
+    final sensorMatched = await _awaitLockerSensorState(
+      lockerId: lockerId,
+      locked: locked,
+      timeout: timeout,
+    );
+
+    if (sensorMatched) {
+      return null;
+    }
+
+    final firestore = _firestore;
+    final currentUser = _currentUser;
+    final trimmedLockerId = lockerId.trim();
+    final warningMessage = locked
+        ? 'Lock not detected: sensor did not confirm closure in time.'
+        : 'Unlock not detected: sensor did not confirm opening in time.';
+
+    if (_useFirebase && firestore != null && trimmedLockerId.isNotEmpty) {
+      try {
+        await firestore
+            .collection(_lockersCollection)
+            .doc(trimmedLockerId)
+            .set({
+              'warning_active': true,
+              'warning_message': warningMessage,
+              'lock_integrity': 'warning',
+              'alert_active': true,
+              'alert_label': 'ALERT',
+              'alert_message': warningMessage,
+              'last_source': _normalizeLockerCommandSource(source),
+              'updated_at': FieldValue.serverTimestamp(),
+            }, SetOptions(merge: true));
+
+        if (currentUser != null) {
+          await addLogEvent(
+            userId: currentUser.userId,
+            lockerId: trimmedLockerId,
+            eventType: locked
+                ? 'LOCK_COMMAND_TIMEOUT'
+                : 'UNLOCK_COMMAND_TIMEOUT',
+            authMethod: 'MOBILE_APP',
+            source: _normalizeLockerCommandSource(source),
+            status: 'warning',
+            details: warningMessage,
+            metadata: {
+              'actuation_settle_delay_ms':
+                  (locked ? _lockerLockSettleDelay : _lockerUnlockSettleDelay)
+                      .inMilliseconds,
+              'sensor_confirmation_timeout_ms': timeout.inMilliseconds,
+            },
+          );
+        }
+      } catch (e, st) {
+        debugPrint(
+          'setLockerLockStateWithSensorValidation warning update failed: $e',
+        );
+        debugPrint(st.toString());
+      }
+    }
+
+    return locked
+        ? 'Lock error: lock not detected.'
+        : 'Unlock error: unlock not detected.';
+  }
+
+  Future<bool> _awaitLockerSensorState({
+    required String lockerId,
+    required bool locked,
+    required Duration timeout,
+  }) async {
+    final firestore = _firestore;
+    final trimmedLockerId = lockerId.trim();
+    if (!_useFirebase || firestore == null || trimmedLockerId.isEmpty) {
+      return false;
+    }
+
+    final completer = Completer<bool>();
+    late final StreamSubscription<DocumentSnapshot<Map<String, dynamic>>> sub;
+    Timer? timer;
+    final settleDelay = locked
+        ? _lockerLockSettleDelay
+        : _lockerUnlockSettleDelay;
+    final settleUntil = DateTime.now().add(settleDelay);
+
+    void complete(bool value) {
+      if (!completer.isCompleted) {
+        completer.complete(value);
+      }
+    }
+
+    sub = firestore
+        .collection(_lockersCollection)
+        .doc(trimmedLockerId)
+        .snapshots()
+        .listen(
+          (snapshot) {
+            final data = snapshot.data();
+            if (data == null) {
+              return;
+            }
+
+            // Give actuators time to move before evaluating sensor confirmation.
+            if (DateTime.now().isBefore(settleUntil)) {
+              return;
+            }
+
+            final magneticSensor = (data['magnetic_sensor'] as String? ?? '')
+                .trim()
+                .toLowerCase();
+            if (magneticSensor == 'closed') {
+              complete(locked);
+              return;
+            }
+            if (magneticSensor == 'open') {
+              complete(!locked);
+              return;
+            }
+          },
+          onError: (Object error, StackTrace stackTrace) {
+            debugPrint('_awaitLockerSensorState stream error: $error');
+            complete(false);
+          },
+        );
+
+    timer = Timer(timeout, () => complete(false));
+
+    final matched = await completer.future;
+    timer.cancel();
+    await sub.cancel();
+    return matched;
+  }
+
+  String _normalizeLockerCommandSource(String source) {
+    final normalized = source.trim().toLowerCase();
+    if (_allowedLockerCommandSources.contains(normalized)) {
+      return normalized;
+    }
+    return 'mobile_app';
+  }
+
+  String? _validateLockerCommandRateLimit(String lockerId) {
+    final previous = _lastLockerCommandAtByLocker[lockerId];
+    if (previous == null) {
+      return null;
+    }
+    final elapsed = DateTime.now().difference(previous);
+    if (elapsed >= _lockerCommandCooldown) {
+      return null;
+    }
+
+    final remaining = (_lockerCommandCooldown - elapsed).inMilliseconds;
+    final seconds = (remaining / 1000).clamp(0.1, 2.0).toStringAsFixed(1);
+    return 'Please wait $seconds seconds before sending another locker command.';
+  }
+
+  Future<String?> _validateLockerOwnership({
+    required FirebaseFirestore firestore,
+    required String lockerId,
+    required String currentUserId,
+  }) async {
+    final snapshot = await firestore
+        .collection(_lockersCollection)
+        .doc(lockerId)
+        .get();
+    if (!snapshot.exists) {
+      return 'Assigned locker no longer exists.';
+    }
+
+    final data = snapshot.data() ?? const <String, dynamic>{};
+    final assignedUserId =
+        (data['assigned_user_id'] as String? ??
+                data['current_user_id'] as String? ??
+                '')
+            .trim();
+    if (assignedUserId.isNotEmpty && assignedUserId != currentUserId) {
+      return 'This locker is assigned to another user.';
+    }
+
+    return null;
   }
 
   Stream<Map<String, int>> watchFloorAvailability({
@@ -865,6 +1113,111 @@ class AuthController extends ChangeNotifier {
     }
   }
 
+  Future<String?> updateProfileName({
+    required String firstName,
+    required String lastName,
+  }) async {
+    final trimmedFirstName = firstName.trim();
+    final trimmedLastName = lastName.trim();
+    if (trimmedFirstName.isEmpty || trimmedLastName.isEmpty) {
+      return 'First name and last name are required.';
+    }
+
+    final current = _currentUser;
+    if (current == null) {
+      return 'You are not logged in.';
+    }
+
+    final currentFirstName = current.firstName.trim();
+    final currentLastName = current.lastName.trim();
+    final hasChanges =
+        trimmedFirstName != currentFirstName ||
+        trimmedLastName != currentLastName;
+    if (!hasChanges) {
+      return null;
+    }
+
+    if (!_useFirebase) {
+      final updatedUser = current.copyWith(
+        firstName: trimmedFirstName,
+        lastName: trimmedLastName,
+      );
+      _currentUser = updatedUser;
+
+      final emailKey = updatedUser.email.trim().toLowerCase();
+      final account = _accounts[emailKey];
+      if (account != null) {
+        _accounts[emailKey] = _StoredAccount(
+          user: updatedUser,
+          password: account.password,
+        );
+      }
+
+      await _persist();
+      return null;
+    }
+
+    final firestore = _firestore;
+    final authUser = _auth?.currentUser;
+    if (firestore == null || authUser == null) {
+      return 'You are not logged in.';
+    }
+
+    _setBusy(true);
+    try {
+      await firestore.collection(_usersCollection).doc(authUser.uid).set({
+        'full_name': {
+          'first_name': trimmedFirstName,
+          'last_name': trimmedLastName,
+        },
+        // Backward compatibility with existing flat-name readers.
+        'firstName': trimmedFirstName,
+        'lastName': trimmedLastName,
+        'updated_at': FieldValue.serverTimestamp(),
+      }, SetOptions(merge: true));
+
+      final updatedUser = current.copyWith(
+        firstName: trimmedFirstName,
+        lastName: trimmedLastName,
+      );
+      _currentUser = updatedUser;
+
+      final emailKey = updatedUser.email.trim().toLowerCase();
+      final existingProfile = _firebaseLoginProfiles[emailKey];
+      if (existingProfile != null) {
+        _firebaseLoginProfiles[emailKey] = _FirebaseLoginProfile(
+          user: updatedUser,
+          hasActiveLocker: existingProfile.hasActiveLocker,
+        );
+      }
+
+      await _logAuthEvent(
+        email: updatedUser.email,
+        userId: updatedUser.userId,
+        lockerId: updatedUser.activeLockerId,
+        eventType: 'PROFILE_UPDATED',
+        status: 'success',
+        details: 'User updated first and last name.',
+        source: 'profile_screen',
+        metadata: {
+          'updated_fields': ['first_name', 'last_name'],
+        },
+      );
+
+      notifyListeners();
+      return null;
+    } on FirebaseException catch (e) {
+      if (e.code == 'permission-denied') {
+        return 'Firestore denied profile update. Check security rules.';
+      }
+      return e.message ?? 'Failed to update profile.';
+    } catch (_) {
+      return 'Failed to update profile.';
+    } finally {
+      _setBusy(false);
+    }
+  }
+
   Future<void> _persist() async {
     if (_useFirebase) {
       notifyListeners();
@@ -891,12 +1244,6 @@ class AuthController extends ChangeNotifier {
   Future<void> _restoreFirebaseSession() async {
     _setBusy(true);
     try {
-      if (kIsWeb) {
-        // Explicitly clear persisted browser auth session so stale remembered
-        // accounts do not auto-login after cache resets.
-        await _auth!.signOut();
-      }
-
       final authUser = _auth!.currentUser;
       if (authUser == null) {
         _currentUser = null;
@@ -1056,7 +1403,9 @@ class AuthController extends ChangeNotifier {
         return 'An account with this email already exists. Log in instead.';
       }
 
-      final userRef = _firestore!.collection(_usersCollection).doc(authUser.uid);
+      final userRef = _firestore!
+          .collection(_usersCollection)
+          .doc(authUser.uid);
       final userSnapshot = await userRef.get();
       if (!userSnapshot.exists || userSnapshot.data() == null) {
         await _createUserProfileInFirestore(
@@ -1384,12 +1733,11 @@ class AuthController extends ChangeNotifier {
       final lockerData = freshLocker.data();
       final isOccupied = (lockerData?['is_occupied'] as bool?) ?? true;
       final status = (lockerData?['status'] as String?) ?? 'broken';
-        final assignedUserId =
-          (lockerData?['assigned_user_id'] as String? ?? '').trim();
-        final occupiedBy = assignedUserId.isNotEmpty
-          ? assignedUserId
-          : (lockerData?['current_user_id'] as String? ?? '')
+      final assignedUserId = (lockerData?['assigned_user_id'] as String? ?? '')
           .trim();
+      final occupiedBy = assignedUserId.isNotEmpty
+          ? assignedUserId
+          : (lockerData?['current_user_id'] as String? ?? '').trim();
       final occupiedByDifferentUser = isOccupied && occupiedBy != userId;
       if (occupiedByDifferentUser || status != 'functional') {
         throw StateError('Selected locker is no longer available.');
@@ -1631,7 +1979,7 @@ class AuthController extends ChangeNotifier {
       metadata: {
         'failed_attempt_count_window': attempts.length,
         'window_seconds': _failedLoginWindow.inSeconds,
-        if (authErrorCode != null) 'auth_error_code': authErrorCode,
+        'auth_error_code': authErrorCode,
       },
     );
 

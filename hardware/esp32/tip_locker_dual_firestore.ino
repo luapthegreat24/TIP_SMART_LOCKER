@@ -32,12 +32,12 @@
 // Locker 1 (Paul)
 #define L1_RELAY_PIN 27
 #define L1_SERVO_PIN 13
+#define L1_REED_PIN 33
 
 // Locker 2 (Arfred)
 #define L2_RELAY_PIN 26
 #define L2_SERVO_PIN 12
 
-// Optional reed switch for locker 2. NC to GND and INPUT_PULLUP.
 #define L2_REED_PIN 25
 
 // LCD (I2C)
@@ -49,15 +49,22 @@
 
 // ------------------------ TIMINGS ---------------------------
 static const uint32_t FIRESTORE_POLL_MS = 3000;
-static const uint32_t AUTO_LOCK_MS = 30000;
+static const uint32_t AUTO_LOCK_MS = 60000;
 static const uint32_t FIREBASE_WAIT_LOG_MS = 5000;
 static const uint32_t RFID_SCAN_COOLDOWN_MS = 1200;
+static const uint32_t RFID_SECURITY_LOCKOUT_MS = 30000;
+static const uint8_t RFID_INVALID_STREAK_LIMIT = 5;
 static const uint32_t MSG_SHORT_MS = 1200;
 static const uint32_t MSG_MEDIUM_MS = 2200;
 static const uint32_t MSG_LONG_MS = 3000;
 static const uint32_t NTP_SYNC_TIMEOUT_MS = 12000;
+static const uint32_t SENSOR_REFLECT_POLL_MS = 500;
+static const uint32_t MIN_ACTUATION_GAP_MS = 1500;
+static const uint8_t MAGNET_SAMPLE_COUNT = 5;
+static const uint32_t MAGNET_SAMPLE_GAP_MS = 2;
+static const uint32_t SENSOR_EVENT_DEDUP_MS = 10000;
 static const int SERVO_LOCK_ANGLE = 0;
-static const int SERVO_UNLOCK_ANGLE = 100;
+static const int SERVO_UNLOCK_ANGLE = 90;
 
 // Keep this false for lightweight runtime logs.
 static const bool VERBOSE_LOGS = false;
@@ -79,25 +86,39 @@ struct LockerConfig {
   int relayPin;
   int servoPin;
   int reedPin;
+  bool reedClosedWhenHigh;   // Sensor polarity: true => HIGH means closed, false => LOW means closed
 };
 
 struct LockerRuntime {
   bool assigned;
   String assignedUserId;
   String assignedUserName;
-  String status;  // locked/unlocked
+  String status;  // Sensor-authenticated status only: locked/unlocked
+  String requestedStatus;  // Remote/app command intent: locked/unlocked
+  String lastPublishedStatus;
+  String lastPublishedSensor;
+  String lastPublishedSource;
+  String lastPublishedWarningKey;
   String remoteSource;
   bool isPhysicallyUnlocked;
   uint32_t unlockedAtMs;
+  String pendingCommandNonce;
+  String lastAppliedCommandNonce;
+  String recentCommandSource;
+  String recentCommandTargetStatus;
+  uint32_t recentCommandAtMs;
+  bool autoLockFailureAlerted;
 };
 
 LockerConfig lockerConfigs[] = {
-    {"locker_1", "27 C9 B2 14", L1_RELAY_PIN, L1_SERVO_PIN, -1},
-  {"locker_2", "97 16 22 15", L2_RELAY_PIN, L2_SERVO_PIN, L2_REED_PIN},
+  // For this hardware setup: magnet near sensor reads HIGH (door closed/locked).
+  {"locker_1", "27 C9 B2 14", L1_RELAY_PIN, L1_SERVO_PIN, L1_REED_PIN, true},
+  {"locker_2", "97 16 22 15", L2_RELAY_PIN, L2_SERVO_PIN, L2_REED_PIN, true},
 };
 
 LockerRuntime lockerState[2];
 uint32_t lastFirestorePollMs = 0;
+uint32_t lastSensorReflectPollMs = 0;
 uint32_t lastFirebaseWaitLogMs = 0;
 uint32_t lastRfidScanMs = 0;
 bool lcdReady = false;
@@ -106,6 +127,9 @@ String lcdLastL2 = "";
 bool lcdHoldActive = false;
 uint32_t lcdHoldUntilMs = 0;
 bool timeSynced = false;
+uint8_t invalidRfidStreak = 0;
+uint32_t rfidLockoutUntilMs = 0;
+uint32_t lastActuationMs[2] = {0, 0};
 
 // -------------------- FUNCTION DECLARATIONS -----------------
 void connectWiFi();
@@ -126,22 +150,31 @@ bool createAccessLog(
   const String &source,
   const String &status
 );
-void applyPhysicalLockState(size_t index, bool unlock, const String &source, const String &uidValue, bool writeBackToFirestore);
+bool applyPhysicalLockState(size_t index, bool unlock, const String &source, const String &uidValue, bool writeBackToFirestore);
 int findLockerIndexByUid(const String &uid);
 String readCardUid();
 String getFieldString(FirebaseJson &payload, const char *path);
 bool getFieldBool(FirebaseJson &payload, const char *path, bool fallback);
 void checkAutoLock();
 String pseudoIsoTimestamp();
-void setLockerActuators(size_t index, bool unlock);
+void setLockerActuators(size_t index, bool unlock, bool pulseOnLock = true);
+void pulseServoOpenThenClose(size_t index);
+void runCloseAssistPulse(size_t index);
+bool readMagnetClosed(size_t index, bool &isClosed);
+bool readMagnetClosedStable(size_t index, bool &isClosed);
+String resolveAuthenticatedStatus(size_t index, bool &hasSensor);
+void reflectLockerStatusFromSensors();
+bool updateLockerAlert(size_t index, bool active, const String &label, const String &message);
 String normalizeSource(const String &source);
 String resolveEventType(bool unlock, const String &source);
 String resolveAuthMethod(const String &source);
 bool shouldCreateDeviceLogForSource(const String &source);
+bool canActuateLocker(size_t index);
 void initLcd();
 void setLcdLines(const String &line1, const String &line2);
 void showUserMessage(const String &line1, const String &line2, uint32_t holdMs);
 bool isUserMessageActive();
+void refreshLcdStatusPanel();
 
 // -------------------------- SETUP ---------------------------
 void setup() {
@@ -191,10 +224,11 @@ void loop() {
   pollFirestoreAndApply();
   processRfid();
   checkAutoLock();
+  reflectLockerStatusFromSensors();
 
-  // Keep an idle user prompt visible when no action is running.
-  if (!isUserMessageActive() && !lockerState[0].isPhysicallyUnlocked && !lockerState[1].isPhysicallyUnlocked) {
-    setLcdLines("SYSTEM READY", "SCAN YOUR CARD");
+  // Render a live locker status panel when no temporary user message is active.
+  if (!isUserMessageActive()) {
+    refreshLcdStatusPanel();
   }
 
   delay(30);
@@ -263,6 +297,20 @@ bool isUserMessageActive() {
   return true;
 }
 
+void refreshLcdStatusPanel() {
+  String l1s = (lockerState[0].status == "locked") ? "LOCK" : "OPEN";
+  String l2s = (lockerState[1].status == "locked") ? "LOCK" : "OPEN";
+
+  if (lockerState[0].requestedStatus == "locked" && lockerState[0].status != "locked") {
+    l1s = "WARN";
+  }
+  if (lockerState[1].requestedStatus == "locked" && lockerState[1].status != "locked") {
+    l2s = "WARN";
+  }
+
+  setLcdLines("L1:" + l1s + " L2:" + l2s, "SCAN CARD / APP");
+}
+
 void initHardware() {
   pinMode(lockerConfigs[0].relayPin, OUTPUT);
   pinMode(lockerConfigs[1].relayPin, OUTPUT);
@@ -274,8 +322,11 @@ void initHardware() {
   servo1.write(SERVO_LOCK_ANGLE);
   servo2.write(SERVO_LOCK_ANGLE);
 
-  if (lockerConfigs[1].reedPin >= 0) {
-    pinMode(lockerConfigs[1].reedPin, INPUT_PULLUP);
+  for (size_t i = 0; i < 2; i++) {
+    if (lockerConfigs[i].reedPin >= 0) {
+      // Reed input uses internal pullup; polarity is handled in readMagnetClosed().
+      pinMode(lockerConfigs[i].reedPin, INPUT_PULLUP);
+    }
   }
 
   SPI.begin();
@@ -286,9 +337,20 @@ void initHardware() {
     lockerState[i].assignedUserId = "";
     lockerState[i].assignedUserName = "";
     lockerState[i].status = "locked";
+    lockerState[i].requestedStatus = "locked";
+    lockerState[i].lastPublishedStatus = "";
+    lockerState[i].lastPublishedSensor = "";
+    lockerState[i].lastPublishedSource = "";
+    lockerState[i].lastPublishedWarningKey = "";
     lockerState[i].remoteSource = "mobile";
     lockerState[i].isPhysicallyUnlocked = false;
     lockerState[i].unlockedAtMs = 0;
+    lockerState[i].pendingCommandNonce = "";
+    lockerState[i].lastAppliedCommandNonce = "";
+    lockerState[i].recentCommandSource = "";
+    lockerState[i].recentCommandTargetStatus = "";
+    lockerState[i].recentCommandAtMs = 0;
+    lockerState[i].autoLockFailureAlerted = false;
   }
 
   Serial.println("[HW] Relays, servos, RFID initialized.");
@@ -380,11 +442,20 @@ void pollFirestoreAndApply() {
       continue;
     }
 
-    // App sets status to unlocked/locked. ESP32 applies physical state.
-    if (lockerState[i].status == "unlocked" && !lockerState[i].isPhysicallyUnlocked) {
-      applyPhysicalLockState(i, true, lockerState[i].remoteSource, "", false);
-    } else if (lockerState[i].status == "locked" && lockerState[i].isPhysicallyUnlocked) {
-      applyPhysicalLockState(i, false, lockerState[i].remoteSource, "", false);
+    // App command intent is tracked separately from sensor-authenticated status.
+    const bool hasNewCommandNonce = lockerState[i].pendingCommandNonce.length() > 0 &&
+      lockerState[i].pendingCommandNonce != lockerState[i].lastAppliedCommandNonce;
+
+    if (lockerState[i].requestedStatus == "unlocked" && !lockerState[i].isPhysicallyUnlocked) {
+      const bool acted = applyPhysicalLockState(i, true, lockerState[i].remoteSource, "", false);
+      if (acted && hasNewCommandNonce) {
+        lockerState[i].lastAppliedCommandNonce = lockerState[i].pendingCommandNonce;
+      }
+    } else if (lockerState[i].requestedStatus == "locked" && lockerState[i].isPhysicallyUnlocked) {
+      const bool acted = applyPhysicalLockState(i, false, lockerState[i].remoteSource, "", false);
+      if (acted && hasNewCommandNonce) {
+        lockerState[i].lastAppliedCommandNonce = lockerState[i].pendingCommandNonce;
+      }
     }
   }
 }
@@ -409,13 +480,23 @@ bool readLockerDoc(size_t index) {
   FirebaseJson payload;
   payload.setJsonData(readFbdo.payload().c_str());
 
-  String status = getFieldString(payload, "fields/status/stringValue");
+  String requestedStatus = getFieldString(payload, "fields/status/stringValue");
   String lockState = getFieldString(payload, "fields/lock_state/stringValue");
-  if (status.length() == 0 && lockState.length() > 0) {
-    status = lockState;
+  if (requestedStatus.length() == 0 && lockState.length() > 0) {
+    requestedStatus = lockState;
   }
-  if (status != "locked" && status != "unlocked") {
+  if (requestedStatus != "locked" && requestedStatus != "unlocked") {
+    requestedStatus = "locked";
+  }
+
+  // Sensor-authenticated status source of truth for locked/unlocked state.
+  // Never assume locked when sensor is unavailable.
+  String status = "unlocked";
+  const String magneticSensor = getFieldString(payload, "fields/magnetic_sensor/stringValue");
+  if (magneticSensor == "closed") {
     status = "locked";
+  } else if (magneticSensor == "open") {
+    status = "unlocked";
   }
 
   // Assignment compatibility with common app schemas.
@@ -432,6 +513,7 @@ bool readLockerDoc(size_t index) {
   if (remoteSource.length() == 0) {
     remoteSource = "mobile";
   }
+  String commandNonce = getFieldString(payload, "fields/command_nonce/stringValue");
 
   // If user id exists, locker is effectively assigned.
   if (assignedUserId.length() > 0) {
@@ -442,11 +524,13 @@ bool readLockerDoc(size_t index) {
   lockerState[index].assignedUserId = assignedUserId;
   lockerState[index].assignedUserName = assignedUserName;
   lockerState[index].status = status;
+  lockerState[index].requestedStatus = requestedStatus;
   lockerState[index].remoteSource = remoteSource;
+  lockerState[index].pendingCommandNonce = commandNonce;
 
   if (VERBOSE_LOGS) {
     Serial.println("[Firestore] " + docPath + " assigned=" + String(isAssigned ? "true" : "false") +
-                   ", userId=" + assignedUserId + ", status=" + status);
+                   ", userId=" + assignedUserId + ", status=" + status + ", requested=" + requestedStatus);
   }
   return true;
 }
@@ -454,14 +538,45 @@ bool readLockerDoc(size_t index) {
 bool updateLockerStatus(size_t index, const String &newStatus, const String &source, const String &uidValue) {
   String docPath = String("lockers/") + lockerConfigs[index].lockerId;
   FirebaseJson content;
+  bool isClosed = false;
+  const bool hasSensor = readMagnetClosed(index, isClosed);
+  const String effectiveStatus = hasSensor ? (isClosed ? "locked" : "unlocked") : "unlocked";
+  const String magneticSensor = hasSensor ? (isClosed ? "closed" : "open") : "unknown";
 
-  content.set("fields/status/stringValue", newStatus);
-  content.set("fields/lock_state/stringValue", newStatus);
+  const bool warningActive =
+      !hasSensor ||
+      (effectiveStatus == "unlocked" && lockerState[index].requestedStatus == "locked");
+  String warningMessage = "";
+  if (!hasSensor) {
+    warningMessage = "WARNING: Sensor unavailable. Lock state is not verified.";
+  } else if (effectiveStatus == "unlocked" && lockerState[index].requestedStatus == "locked") {
+    warningMessage = "WARNING: Door is open while lock command is LOCKED.";
+  }
+  const String lockIntegrity = warningActive ? "warning" : "secure";
+  const String warningKey = warningActive ? warningMessage : "";
+
+  if (lockerState[index].lastPublishedStatus == effectiveStatus &&
+      lockerState[index].lastPublishedSensor == magneticSensor &&
+      lockerState[index].lastPublishedSource == source &&
+      lockerState[index].lastPublishedWarningKey == warningKey) {
+    if (VERBOSE_LOGS) {
+      Serial.println("[Firestore] Skipped duplicate status patch for " + docPath);
+    }
+    return true;
+  }
+
+  content.set("fields/status/stringValue", effectiveStatus);
+  content.set("fields/lock_state/stringValue", effectiveStatus);
   content.set("fields/uid/stringValue", uidValue);
   content.set("fields/last_source/stringValue", source);
   content.set("fields/updated_at/stringValue", String(millis()));
+  content.set("fields/status_verified/booleanValue", hasSensor);
+  content.set("fields/magnetic_sensor/stringValue", magneticSensor);
+  content.set("fields/lock_integrity/stringValue", lockIntegrity);
+  content.set("fields/warning_active/booleanValue", warningActive);
+  content.set("fields/warning_message/stringValue", warningMessage);
 
-  const String updateMask = "status,lock_state,uid,last_source,updated_at";
+  const String updateMask = "status,lock_state,uid,last_source,updated_at,status_verified,magnetic_sensor,lock_integrity,warning_active,warning_message";
   Serial.println("[Firestore] PATCH " + docPath);
 
   bool ok = Firebase.Firestore.patchDocument(
@@ -474,8 +589,36 @@ bool updateLockerStatus(size_t index, const String &newStatus, const String &sou
 
   if (ok) {
     Serial.println("[Firestore] Locker update successful.");
+    lockerState[index].lastPublishedStatus = effectiveStatus;
+    lockerState[index].lastPublishedSensor = magneticSensor;
+    lockerState[index].lastPublishedSource = source;
+    lockerState[index].lastPublishedWarningKey = warningKey;
   } else {
     Serial.print("[Firestore] Locker update failed: ");
+    Serial.println(fbdo.errorReason());
+  }
+  return ok;
+}
+
+bool updateLockerAlert(size_t index, bool active, const String &label, const String &message) {
+  String docPath = String("lockers/") + lockerConfigs[index].lockerId;
+  FirebaseJson content;
+  content.set("fields/alert_active/booleanValue", active);
+  content.set("fields/alert_label/stringValue", active ? label : "");
+  content.set("fields/alert_message/stringValue", active ? message : "");
+  content.set("fields/alert_updated_at/stringValue", String(millis()));
+
+  const String updateMask = "alert_active,alert_label,alert_message,alert_updated_at";
+  bool ok = Firebase.Firestore.patchDocument(
+      &fbdo,
+      FIREBASE_PROJECT_ID,
+      FIRESTORE_DB,
+      docPath.c_str(),
+      content.raw(),
+      updateMask.c_str());
+
+  if (!ok) {
+    Serial.print("[Firestore] Alert update failed: ");
     Serial.println(fbdo.errorReason());
   }
   return ok;
@@ -526,7 +669,7 @@ bool createAccessLog(
   return ok;
 }
 
-void applyPhysicalLockState(size_t index, bool unlock, const String &source, const String &uidValue, bool writeBackToFirestore) {
+bool applyPhysicalLockState(size_t index, bool unlock, const String &source, const String &uidValue, bool writeBackToFirestore) {
   const LockerConfig &cfg = lockerConfigs[index];
   LockerRuntime &runtime = lockerState[index];
   const String normalizedSource = normalizeSource(source);
@@ -534,15 +677,29 @@ void applyPhysicalLockState(size_t index, bool unlock, const String &source, con
   const bool shouldLog = shouldCreateDeviceLogForSource(normalizedSource);
   const String eventType = resolveEventType(unlock, normalizedSource);
   const String authMethod = resolveAuthMethod(normalizedSource);
+    const bool suppressLockPulse =
+      !unlock && (normalizedSource == "manual" || normalizedSource == "sensor");
   const String userId = runtime.assignedUserId.isEmpty()
       ? "__unresolved__"
       : runtime.assignedUserId;
 
+  if (unlock && runtime.isPhysicallyUnlocked) {
+    return false;
+  }
+  if (!unlock && !runtime.isPhysicallyUnlocked) {
+    return false;
+  }
+  if (!canActuateLocker(index)) {
+    Serial.println("[SAFE] Actuation throttled for " + String(cfg.lockerId));
+    return false;
+  }
+
   if (unlock) {
-    setLockerActuators(index, true);
+    setLockerActuators(index, true, true);
     runtime.isPhysicallyUnlocked = true;
     runtime.unlockedAtMs = millis();
-    runtime.status = "unlocked";
+    bool hasSensor = false;
+    runtime.status = resolveAuthenticatedStatus(index, hasSensor);
     Serial.println("[LOCKER] " + String(cfg.lockerId) + " physically UNLOCKED by " + normalizedSource);
     showUserMessage("Access Granted", String(cfg.lockerId) + " OPEN", MSG_MEDIUM_MS);
     if (shouldWriteBack) {
@@ -561,9 +718,10 @@ void applyPhysicalLockState(size_t index, bool unlock, const String &source, con
       );
     }
   } else {
-    setLockerActuators(index, false);
+    setLockerActuators(index, false, !suppressLockPulse);
     runtime.isPhysicallyUnlocked = false;
-    runtime.status = "locked";
+    bool hasSensor = false;
+    runtime.status = resolveAuthenticatedStatus(index, hasSensor);
     Serial.println("[LOCKER] " + String(cfg.lockerId) + " physically LOCKED by " + normalizedSource);
     showUserMessage(String(cfg.lockerId), "LOCKED", MSG_SHORT_MS);
     if (shouldWriteBack) {
@@ -582,20 +740,57 @@ void applyPhysicalLockState(size_t index, bool unlock, const String &source, con
       );
     }
   }
+
+  runtime.recentCommandSource = normalizedSource;
+  runtime.recentCommandTargetStatus = unlock ? "unlocked" : "locked";
+  runtime.recentCommandAtMs = millis();
+  return true;
 }
 
-void setLockerActuators(size_t index, bool unlock) {
+void setLockerActuators(size_t index, bool unlock, bool pulseOnLock) {
   const LockerConfig &cfg = lockerConfigs[index];
-  digitalWrite(cfg.relayPin, unlock ? LOW : HIGH);
-
-  if (index == 0) {
-    servo1.write(unlock ? SERVO_UNLOCK_ANGLE : SERVO_LOCK_ANGLE);
-  } else {
-    servo2.write(unlock ? SERVO_UNLOCK_ANGLE : SERVO_LOCK_ANGLE);
+  if (unlock) {
+    // Unlock relay, then do a one-shot 90-degree hatch push and return to rest.
+    digitalWrite(cfg.relayPin, LOW);
+    pulseServoOpenThenClose(index);
+    lastActuationMs[index] = millis();
+    return;
   }
+
+  // For manual/sensor lock events, skip servo movement and only engage relay.
+  if (pulseOnLock) {
+    // On lock, do the same 90-degree pulse to help door close, then engage lock.
+    pulseServoOpenThenClose(index);
+  }
+  digitalWrite(cfg.relayPin, HIGH);
+  lastActuationMs[index] = millis();
+}
+
+void pulseServoOpenThenClose(size_t index) {
+  if (index == 0) {
+    servo1.write(SERVO_UNLOCK_ANGLE);
+    delay(450);
+    servo1.write(SERVO_LOCK_ANGLE);
+  } else {
+    servo2.write(SERVO_UNLOCK_ANGLE);
+    delay(450);
+    servo2.write(SERVO_LOCK_ANGLE);
+  }
+  delay(200);
+}
+
+void runCloseAssistPulse(size_t index) {
+  // Close-assist action: nudge hatch outward then return to rest.
+  pulseServoOpenThenClose(index);
 }
 
 void processRfid() {
+  const uint32_t now = millis();
+  if ((int32_t)(now - rfidLockoutUntilMs) < 0) {
+    showUserMessage("RFID LOCKOUT", "WAIT 30 SEC", MSG_SHORT_MS);
+    return;
+  }
+
   if (millis() - lastRfidScanMs < RFID_SCAN_COOLDOWN_MS) {
     return;
   }
@@ -611,6 +806,21 @@ void processRfid() {
 
   int lockerIndex = findLockerIndexByUid(uid);
   if (lockerIndex < 0) {
+    invalidRfidStreak++;
+    if (invalidRfidStreak >= RFID_INVALID_STREAK_LIMIT) {
+      rfidLockoutUntilMs = millis() + RFID_SECURITY_LOCKOUT_MS;
+      invalidRfidStreak = 0;
+      createAccessLog(
+        "__unresolved__",
+        "unknown",
+        uid,
+        "AUTH_SECURITY_ALERT",
+        "Too many invalid RFID attempts; temporary lockout activated",
+        "RFID",
+        "rfid",
+        "blocked"
+      );
+    }
     Serial.println("[RFID] Invalid ID. Access Denied.");
     createAccessLog(
       "__unresolved__",
@@ -630,6 +840,7 @@ void processRfid() {
 
   LockerRuntime &runtime = lockerState[lockerIndex];
   if (!runtime.assigned) {
+    invalidRfidStreak++;
     Serial.println("[RFID] RFID Not Activated. Access Denied.");
     createAccessLog(
       runtime.assignedUserId.isEmpty() ? "__unresolved__" : runtime.assignedUserId,
@@ -647,6 +858,8 @@ void processRfid() {
     return;
   }
 
+  invalidRfidStreak = 0;
+
   applyPhysicalLockState(lockerIndex, true, "rfid", uid, true);
 
   rfid.PICC_HaltA();
@@ -659,20 +872,201 @@ void checkAutoLock() {
       continue;
     }
 
-    bool shouldLock = false;
-    if (millis() - lockerState[i].unlockedAtMs >= AUTO_LOCK_MS) {
-      shouldLock = true;
+    if (millis() - lockerState[i].unlockedAtMs < AUTO_LOCK_MS) {
+      continue;
     }
 
-    if (lockerConfigs[i].reedPin >= 0) {
-      int reedState = digitalRead(lockerConfigs[i].reedPin);
-      if (reedState == LOW) {
-        shouldLock = true;
-      }
-    }
+    bool isClosed = false;
+    const bool hasSensor = readMagnetClosed(i, isClosed);
 
-    if (shouldLock) {
+    if (!hasSensor) {
+      lockerState[i].requestedStatus = "locked";
+      lockerState[i].remoteSource = "auto";
       applyPhysicalLockState(i, false, "auto", "", true);
+      continue;
+    }
+
+    if (isClosed) {
+      lockerState[i].requestedStatus = "locked";
+      lockerState[i].remoteSource = "auto";
+      applyPhysicalLockState(i, false, "auto", "", true);
+      continue;
+    }
+
+    // Door is still open after timeout: run close-assist pulse and re-check later.
+    Serial.println("[AUTO] " + String(lockerConfigs[i].lockerId) + " still open after timeout. Running close-assist pulse.");
+    lockerState[i].requestedStatus = "locked";
+    lockerState[i].remoteSource = "auto";
+    if (!lockerState[i].autoLockFailureAlerted) {
+      const String userId = lockerState[i].assignedUserId.isEmpty()
+        ? "__unresolved__"
+        : lockerState[i].assignedUserId;
+      updateLockerAlert(i, true, "ALERT", "Auto-lock failed: door still open after timeout");
+      createAccessLog(
+        userId,
+        lockerConfigs[i].lockerId,
+        "",
+        "AUTO_LOCK_FAILED",
+        "Auto-lock failed: door still open after timeout",
+        "SYSTEM",
+        "auto",
+        "warning"
+      );
+      lockerState[i].autoLockFailureAlerted = true;
+    }
+    runCloseAssistPulse(i);
+    lockerState[i].unlockedAtMs = millis();
+    updateLockerStatus(i, lockerState[i].status, "auto_assist", "");
+  }
+}
+
+bool readMagnetClosed(size_t index, bool &isClosed) {
+  return readMagnetClosedStable(index, isClosed);
+}
+
+bool readMagnetClosedStable(size_t index, bool &isClosed) {
+  if (lockerConfigs[index].reedPin < 0) {
+    isClosed = false;
+    return false;
+  }
+
+  uint8_t closedVotes = 0;
+  for (uint8_t i = 0; i < MAGNET_SAMPLE_COUNT; i++) {
+    const int reedState = digitalRead(lockerConfigs[index].reedPin);
+    const bool sampleClosed = lockerConfigs[index].reedClosedWhenHigh
+        ? (reedState == HIGH)
+        : (reedState == LOW);
+    if (sampleClosed) {
+      closedVotes++;
+    }
+    if (i + 1 < MAGNET_SAMPLE_COUNT) {
+      delay(MAGNET_SAMPLE_GAP_MS);
+    }
+  }
+
+  isClosed = (closedVotes >= ((MAGNET_SAMPLE_COUNT / 2) + 1));
+  return true;
+}
+
+bool canActuateLocker(size_t index) {
+  const uint32_t now = millis();
+  return (now - lastActuationMs[index]) >= MIN_ACTUATION_GAP_MS;
+}
+
+String resolveAuthenticatedStatus(size_t index, bool &hasSensor) {
+  bool isClosed = false;
+  hasSensor = readMagnetClosed(index, isClosed);
+
+  if (!hasSensor) {
+    return "unlocked";
+  }
+
+  // Status is sensor-authenticated only: closed means locked, open means unlocked.
+  return isClosed ? "locked" : "unlocked";
+}
+
+void reflectLockerStatusFromSensors() {
+  const uint32_t now = millis();
+  if (now - lastSensorReflectPollMs < SENSOR_REFLECT_POLL_MS) {
+    return;
+  }
+  lastSensorReflectPollMs = now;
+
+  for (size_t i = 0; i < 2; i++) {
+    bool hasSensor = false;
+    const String authenticatedStatus = resolveAuthenticatedStatus(i, hasSensor);
+
+    if (!hasSensor) {
+      continue;
+    }
+
+    if (authenticatedStatus != lockerState[i].status) {
+      const String normalizedRemoteSource = normalizeSource(lockerState[i].remoteSource);
+      const bool hasRecentCommand = lockerState[i].recentCommandAtMs > 0 &&
+        (now - lockerState[i].recentCommandAtMs) <= SENSOR_EVENT_DEDUP_MS &&
+        lockerState[i].recentCommandTargetStatus == authenticatedStatus;
+      const bool appRequestedLock =
+        authenticatedStatus == "locked" &&
+        lockerState[i].requestedStatus == "locked" &&
+        normalizedRemoteSource == "mobile";
+      const bool treatAsAuthorizedCommand = hasRecentCommand || appRequestedLock;
+      const bool lockNotSecure =
+        authenticatedStatus == "unlocked" &&
+        lockerState[i].requestedStatus == "locked";
+      const bool unauthorizedOpen =
+        authenticatedStatus == "unlocked" &&
+        !treatAsAuthorizedCommand &&
+        !lockerState[i].isPhysicallyUnlocked;
+
+      lockerState[i].status = authenticatedStatus;
+      Serial.println("[SENSOR] " + String(lockerConfigs[i].lockerId) + " reflected as " + authenticatedStatus);
+
+      const String reflectSource = appRequestedLock
+        ? String("mobile")
+        : (hasRecentCommand ? lockerState[i].recentCommandSource : String("sensor"));
+
+      if (appRequestedLock) {
+        // Keep attribution to app when lock is app-commanded and sensor later confirms closure.
+        lockerState[i].recentCommandSource = "mobile";
+      }
+
+      updateLockerStatus(i, authenticatedStatus, reflectSource, "");
+
+      if (authenticatedStatus == "locked") {
+        updateLockerAlert(i, false, "", "");
+        lockerState[i].autoLockFailureAlerted = false;
+      }
+
+      if (unauthorizedOpen) {
+        const String userId = lockerState[i].assignedUserId.isEmpty()
+          ? "__unresolved__"
+          : lockerState[i].assignedUserId;
+        updateLockerAlert(i, true, "ALERT", "Unauthorized door open detected by magnetic sensor");
+        createAccessLog(
+          userId,
+          lockerConfigs[i].lockerId,
+          "",
+          "ALERT_UNAUTHORIZED_OPEN",
+          "Unauthorized door open detected by magnetic sensor",
+          "MAGNET_SENSOR",
+          "sensor",
+          "alert"
+        );
+        continue;
+      }
+
+      if (lockNotSecure) {
+        const String userId = lockerState[i].assignedUserId.isEmpty()
+          ? "__unresolved__"
+          : lockerState[i].assignedUserId;
+        createAccessLog(
+          userId,
+          lockerConfigs[i].lockerId,
+          "",
+          "ALERT_LOCK_NOT_SECURE",
+          "WARNING: Lock command is LOCKED but door sensor is OPEN",
+          "MAGNET_SENSOR",
+          "sensor",
+          "warning"
+        );
+      }
+
+      if (!treatAsAuthorizedCommand) {
+        const String eventType = resolveEventType(authenticatedStatus == "unlocked", "sensor");
+        const String userId = lockerState[i].assignedUserId.isEmpty()
+          ? "__unresolved__"
+          : lockerState[i].assignedUserId;
+        createAccessLog(
+          userId,
+          lockerConfigs[i].lockerId,
+          "",
+          eventType,
+          "State changed by magnetic sensor feedback",
+          resolveAuthMethod("sensor"),
+          "sensor",
+          "success"
+        );
+      }
     }
   }
 }
@@ -721,7 +1115,8 @@ String normalizeSource(const String &source) {
   String s = source;
   s.toLowerCase();
 
-  if (s == "app_sync" || s == "app" || s == "dashboard" || s == "activity" || s == "mobile") {
+  if (s == "app_sync" || s == "app" || s == "dashboard" || s == "activity" || s == "mobile" ||
+      s == "mobile_app" || s == "dashboard_fab" || s == "map_page_fab" || s == "activity_logs_fab") {
     return "mobile";
   }
   if (s == "rfid") {
@@ -732,6 +1127,12 @@ String normalizeSource(const String &source) {
   }
   if (s == "manual") {
     return "manual";
+  }
+  if (s == "sensor" || s == "sensor_auth" || s == "sensor_sync") {
+    return "sensor";
+  }
+  if (s == "auto_assist") {
+    return "auto";
   }
 
   return "mobile";
@@ -750,6 +1151,9 @@ String resolveEventType(bool unlock, const String &source) {
   if (source == "auto") {
     return unlock ? "AUTO_UNLOCK" : "AUTO_LOCK";
   }
+  if (source == "sensor") {
+    return unlock ? "SENSOR_UNLOCK" : "SENSOR_LOCK";
+  }
 
   return unlock ? "UNLOCK" : "LOCK";
 }
@@ -767,12 +1171,15 @@ String resolveAuthMethod(const String &source) {
   if (source == "auto") {
     return "SYSTEM";
   }
+  if (source == "sensor") {
+    return "MAGNET_SENSOR";
+  }
 
   return "SYSTEM";
 }
 
 bool shouldCreateDeviceLogForSource(const String &source) {
-  return source.length() > 0;
+  return source.length() > 0 && source != "sensor_sync";
 }
 
 String pseudoIsoTimestamp() {
@@ -797,3 +1204,4 @@ String pseudoIsoTimestamp() {
            (unsigned long)(seconds % 60));
   return String(out);
 }
+ 
