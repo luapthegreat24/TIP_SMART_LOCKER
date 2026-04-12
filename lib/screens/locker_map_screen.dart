@@ -254,9 +254,7 @@ class _LockerMapScreenState extends State<LockerMapScreen>
         title: targetLocked
             ? 'Locking in progress...'
             : 'Unlocking in progress...',
-        detail: targetLocked
-            ? 'Waiting for sensor confirmation'
-            : 'Waiting for sensor confirmation',
+        detail: 'Sending command to locker',
         isLocked: targetLocked,
         duration: const Duration(milliseconds: 1400),
       ),
@@ -265,12 +263,11 @@ class _LockerMapScreenState extends State<LockerMapScreen>
     final userId = widget.userId.trim();
     final lockerId = widget.assignedLockerId.trim();
     if (userId.isNotEmpty && lockerId.isNotEmpty) {
-      final controlError = await widget.controller
-          .setLockerLockStateWithSensorValidation(
-            lockerId: lockerId,
-            locked: targetLocked,
-            source: 'map_page_fab',
-          );
+      final controlError = await widget.controller.setLockerLockState(
+        lockerId: lockerId,
+        locked: targetLocked,
+        source: 'map_page_fab',
+      );
       if (!mounted) {
         return;
       }
@@ -288,7 +285,6 @@ class _LockerMapScreenState extends State<LockerMapScreen>
         return;
       }
 
-      lockController.setLocked(targetLocked);
       unawaited(
         _lockToastOverlay.show(
           context: context,

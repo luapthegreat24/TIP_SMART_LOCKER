@@ -54,7 +54,7 @@ ActivityItem _activityFromLog(LockerLogEntry log, int index) {
     'SENSOR_LOCK' => 'Locked via Sensor',
     'MANUAL_LOCK' => 'Locked via Manual Lock',
     'MANUAL_UNLOCK' => 'Unlocked via Manual Lock',
-    'AUTO_LOCK' => 'Locked automatically after inactivity',
+    'AUTO_LOCK' => 'Automatically locked',
     'LOCK' => 'Locked by System',
     'UNLOCK' => 'Unlocked by System',
     'LOGIN_SUCCESS' => 'Successful sign in',
@@ -134,7 +134,7 @@ class _LockerDashboardScreenState extends State<LockerDashboardScreen>
   Offset? _lockFabPos;
   bool _isDraggingLockFab = false;
 
-  final int _alertCount = 0;
+  int get _alertCount => _activities.where(_isIntrusionAlertActivity).length;
   DateTime? _lastToggledAt;
   bool _notifEnabled = true;
   bool _autoLock = true;
@@ -145,6 +145,19 @@ class _LockerDashboardScreenState extends State<LockerDashboardScreen>
   }
 
   bool get _hasAssignedLocker => widget.user.activeLockerId.trim().isNotEmpty;
+
+  bool _isIntrusionAlertActivity(ActivityItem item) {
+    final event = item.eventType.toUpperCase();
+    if (event == 'ALERT_UNAUTHORIZED_OPEN' ||
+        event == 'ALERT_LOCK_NOT_SECURE' ||
+        event == 'AUTO_LOCK_FAILED') {
+      return true;
+    }
+
+    final status = item.status.toLowerCase();
+    return item.type == ActivityType.security &&
+        (status == 'alert' || status == 'warning');
+  }
 
   Color get _lockerBadgeColor => _hasAssignedLocker ? T.accent : T.amber;
 
@@ -171,6 +184,8 @@ class _LockerDashboardScreenState extends State<LockerDashboardScreen>
   StreamSubscription<List<LockerLogEntry>>? _logsSubscription;
   StreamSubscription<bool>? _lockerStateSubscription;
   Timer? _autoLockTimer;
+  DateTime? _autoLockArmedAt;
+  int _autoLockGeneration = 0;
 
   List<ActivityItem> _activities = const [];
 
@@ -311,7 +326,7 @@ class _LockerDashboardScreenState extends State<LockerDashboardScreen>
         title: targetLocked
             ? 'Locking in progress...'
             : 'Unlocking in progress...',
-        detail: 'Waiting for sensor confirmation',
+        detail: 'Sending command to locker',
         isLocked: targetLocked,
         duration: const Duration(milliseconds: 1400),
       ),
@@ -320,12 +335,11 @@ class _LockerDashboardScreenState extends State<LockerDashboardScreen>
     final userId = widget.user.userId.trim();
     final lockerId = widget.user.activeLockerId.trim();
     if (userId.isNotEmpty && lockerId.isNotEmpty) {
-      final controlError = await widget.controller
-          .setLockerLockStateWithSensorValidation(
-            lockerId: lockerId,
-            locked: targetLocked,
-            source: 'dashboard_fab',
-          );
+      final controlError = await widget.controller.setLockerLockState(
+        lockerId: lockerId,
+        locked: targetLocked,
+        source: 'dashboard_fab',
+      );
       if (!mounted) {
         return;
       }
@@ -343,7 +357,6 @@ class _LockerDashboardScreenState extends State<LockerDashboardScreen>
         return;
       }
 
-      _lockController.setLocked(targetLocked);
       if (showToast) {
         unawaited(
           _lockToastOverlay.show(
@@ -366,16 +379,34 @@ class _LockerDashboardScreenState extends State<LockerDashboardScreen>
   void _registerUserActivity() {
     if (!_autoLock || _lockController.isLocked) {
       _autoLockTimer?.cancel();
+      _autoLockArmedAt = null;
+      _autoLockGeneration++;
       return;
     }
 
     _autoLockTimer?.cancel();
+    _autoLockArmedAt = DateTime.now();
+    _autoLockGeneration++;
+    final generation = _autoLockGeneration;
     _autoLockTimer = Timer(_autoLockDelay, () {
-      unawaited(_runAutoLock());
+      unawaited(_runAutoLock(generation));
     });
   }
 
-  Future<void> _runAutoLock() async {
+  Future<void> _runAutoLock(int generation) async {
+    if (generation != _autoLockGeneration) {
+      return;
+    }
+
+    final armedAt = _autoLockArmedAt;
+    if (armedAt == null) {
+      return;
+    }
+
+    if (DateTime.now().difference(armedAt) < _autoLockDelay) {
+      return;
+    }
+
     if (!mounted || !_autoLock || _lockController.isLocked) {
       return;
     }
@@ -384,17 +415,15 @@ class _LockerDashboardScreenState extends State<LockerDashboardScreen>
 
     final lockerId = widget.user.activeLockerId.trim();
     if (lockerId.isNotEmpty) {
-      final error = await widget.controller
-          .setLockerLockStateWithSensorValidation(
-            lockerId: lockerId,
-            locked: true,
-            source: 'dashboard_fab',
-          );
+      final error = await widget.controller.setLockerLockState(
+        lockerId: lockerId,
+        locked: true,
+        source: 'dashboard_fab',
+      );
       if (!mounted) {
         return;
       }
       if (error == null) {
-        _lockController.setLocked(true);
         unawaited(
           _lockToastOverlay.show(context: context, vsync: this, isLocked: true),
         );
@@ -881,15 +910,15 @@ class _LockerDashboardScreenState extends State<LockerDashboardScreen>
                     ),
                   ),
                   divider,
-                  const Expanded(
+                  Expanded(
                     child: Padding(
-                      padding: EdgeInsets.all(T.gap12),
+                      padding: const EdgeInsets.all(T.gap12),
                       child: Column(
                         crossAxisAlignment: CrossAxisAlignment.start,
                         mainAxisAlignment: MainAxisAlignment.center,
                         children: [
                           Text(
-                            '0',
+                            '$_alertCount',
                             style: TextStyle(
                               fontSize: 36,
                               fontWeight: FontWeight.w900,
@@ -900,8 +929,8 @@ class _LockerDashboardScreenState extends State<LockerDashboardScreen>
                           ),
                           SizedBox(height: T.gap4),
                           Text(
-                            'No alerts',
-                            style: TextStyle(
+                            _alertCount > 0 ? 'Intrusion alerts' : 'No alerts',
+                            style: const TextStyle(
                               fontSize: 12,
                               fontWeight: FontWeight.w400,
                               color: T.textMuted,
@@ -1666,7 +1695,7 @@ class _ActivityLogPageState extends State<_ActivityLogPage>
         title: targetLocked
             ? 'Locking in progress...'
             : 'Unlocking in progress...',
-        detail: 'Waiting for sensor confirmation',
+        detail: 'Sending command to locker',
         isLocked: targetLocked,
         duration: const Duration(milliseconds: 1400),
       ),
@@ -1679,12 +1708,11 @@ class _ActivityLogPageState extends State<_ActivityLogPage>
 
     final lockerId = widget.lockerId.trim();
     if (lockerId.isNotEmpty) {
-      final controlError = await widget.controller
-          .setLockerLockStateWithSensorValidation(
-            lockerId: lockerId,
-            locked: targetLocked,
-            source: 'activity_logs_fab',
-          );
+      final controlError = await widget.controller.setLockerLockState(
+        lockerId: lockerId,
+        locked: targetLocked,
+        source: 'activity_logs_fab',
+      );
       if (!mounted) {
         return;
       }
@@ -1702,7 +1730,6 @@ class _ActivityLogPageState extends State<_ActivityLogPage>
         return;
       }
 
-      lockController.setLocked(targetLocked);
       unawaited(
         _lockToastOverlay.show(
           context: context,

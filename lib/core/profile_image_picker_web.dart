@@ -10,7 +10,9 @@ ProfileImagePicker createPicker() => _WebProfileImagePicker();
 
 class _WebProfileImagePicker implements ProfileImagePicker {
   @override
-  Future<Uint8List?> pickImageBytes({required ProfileImageSource source}) async {
+  Future<Uint8List?> pickImageBytes({
+    required ProfileImageSource source,
+  }) async {
     final input = html.FileUploadInputElement()..accept = 'image/*';
     if (source == ProfileImageSource.camera) {
       input.setAttribute('capture', 'environment');

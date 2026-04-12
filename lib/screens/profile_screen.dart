@@ -17,7 +17,8 @@ class ProfileScreen extends StatefulWidget {
   final Future<String?> Function({
     required String firstName,
     required String lastName,
-  }) onUpdateName;
+  })
+  onUpdateName;
   final double contentBottomPadding;
 
   const ProfileScreen({
@@ -189,16 +190,14 @@ class _ProfileScreenState extends State<ProfileScreen> {
               ListTile(
                 leading: const Icon(Icons.camera_alt_outlined),
                 title: const Text('Camera'),
-                onTap: () => Navigator.of(sheetContext).pop(
-                  ProfileImageSource.camera,
-                ),
+                onTap: () =>
+                    Navigator.of(sheetContext).pop(ProfileImageSource.camera),
               ),
               ListTile(
                 leading: const Icon(Icons.photo_library_outlined),
                 title: const Text('Photo library'),
-                onTap: () => Navigator.of(sheetContext).pop(
-                  ProfileImageSource.gallery,
-                ),
+                onTap: () =>
+                    Navigator.of(sheetContext).pop(ProfileImageSource.gallery),
               ),
             ],
           ),
@@ -276,36 +275,42 @@ class _ProfileScreenState extends State<ProfileScreen> {
     return GestureDetector(
       onTap: (_isEditingName && !_isSavingAvatar) ? _pickProfileImage : null,
       child: Container(
-      width: 68,
-      height: 68,
-      decoration: BoxDecoration(
-        color: T.accentDim,
-        borderRadius: BorderRadius.circular(T.r16),
-        border: Border.all(color: T.accent.withValues(alpha: 0.35), width: T.strokeSm),
-      ),
-      child: ClipRRect(
-        borderRadius: BorderRadius.circular(T.r16 - 2),
-        child: _isLoadingAvatar
-            ? const Center(
-                child: SizedBox(
-                  width: 20,
-                  height: 20,
-                  child: CircularProgressIndicator(strokeWidth: 2, color: T.accent),
-                ),
-              )
-            : avatarBytes == null
-            ? Center(
-                child: Text(
-                  widget.user.initials,
-                  style: const TextStyle(
-                    fontSize: 30,
-                    fontWeight: FontWeight.w900,
-                    color: T.accent,
+        width: 68,
+        height: 68,
+        decoration: BoxDecoration(
+          color: T.accentDim,
+          borderRadius: BorderRadius.circular(T.r16),
+          border: Border.all(
+            color: T.accent.withValues(alpha: 0.35),
+            width: T.strokeSm,
+          ),
+        ),
+        child: ClipRRect(
+          borderRadius: BorderRadius.circular(T.r16 - 2),
+          child: _isLoadingAvatar
+              ? const Center(
+                  child: SizedBox(
+                    width: 20,
+                    height: 20,
+                    child: CircularProgressIndicator(
+                      strokeWidth: 2,
+                      color: T.accent,
+                    ),
                   ),
-                ),
-              )
-            : Image.memory(avatarBytes, fit: BoxFit.cover),
-      ),
+                )
+              : avatarBytes == null
+              ? Center(
+                  child: Text(
+                    widget.user.initials,
+                    style: const TextStyle(
+                      fontSize: 30,
+                      fontWeight: FontWeight.w900,
+                      color: T.accent,
+                    ),
+                  ),
+                )
+              : Image.memory(avatarBytes, fit: BoxFit.cover),
+        ),
       ),
     );
   }
@@ -368,7 +373,12 @@ class _ProfileScreenState extends State<ProfileScreen> {
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
                           const Padding(
-                            padding: EdgeInsets.fromLTRB(T.gap12, T.gap12, T.gap12, T.gap12),
+                            padding: EdgeInsets.fromLTRB(
+                              T.gap12,
+                              T.gap12,
+                              T.gap12,
+                              T.gap12,
+                            ),
                             child: Text(
                               'PROFILE DASHBOARD',
                               style: TextStyle(
@@ -379,7 +389,11 @@ class _ProfileScreenState extends State<ProfileScreen> {
                               ),
                             ),
                           ),
-                          const Divider(color: T.border, thickness: 1, height: 1),
+                          const Divider(
+                            color: T.border,
+                            thickness: 1,
+                            height: 1,
+                          ),
                           Padding(
                             padding: const EdgeInsets.all(T.gap16),
                             child: Row(
@@ -389,7 +403,8 @@ class _ProfileScreenState extends State<ProfileScreen> {
                                 const SizedBox(width: T.gap16),
                                 Expanded(
                                   child: Column(
-                                    crossAxisAlignment: CrossAxisAlignment.start,
+                                    crossAxisAlignment:
+                                        CrossAxisAlignment.start,
                                     children: [
                                       Text(
                                         widget.user.fullName,
@@ -461,7 +476,12 @@ class _ProfileScreenState extends State<ProfileScreen> {
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
                         Padding(
-                          padding: const EdgeInsets.fromLTRB(T.gap16, T.gap12, T.gap12, T.gap12),
+                          padding: const EdgeInsets.fromLTRB(
+                            T.gap16,
+                            T.gap12,
+                            T.gap12,
+                            T.gap12,
+                          ),
                           child: Row(
                             children: [
                               const Expanded(
@@ -479,7 +499,11 @@ class _ProfileScreenState extends State<ProfileScreen> {
                           ),
                         ),
                         if (_isEditingName) ...[
-                          const Divider(color: T.border, thickness: 1, height: 1),
+                          const Divider(
+                            color: T.border,
+                            thickness: 1,
+                            height: 1,
+                          ),
                           Padding(
                             padding: const EdgeInsets.all(T.gap12),
                             child: Column(
@@ -514,12 +538,22 @@ class _ProfileScreenState extends State<ProfileScreen> {
                         _InfoRow(
                           icon: Icons.person_outline_rounded,
                           label: 'Name',
-                          value: '${widget.user.firstName} ${widget.user.lastName}'.trim(),
+                          value:
+                              '${widget.user.firstName} ${widget.user.lastName}'
+                                  .trim(),
                         ),
                         const Divider(color: T.border, thickness: 1, height: 1),
-                        _InfoRow(icon: Icons.badge, label: 'Student ID', value: widget.user.studentId),
+                        _InfoRow(
+                          icon: Icons.badge,
+                          label: 'Student ID',
+                          value: widget.user.studentId,
+                        ),
                         const Divider(color: T.border, thickness: 1, height: 1),
-                        _InfoRow(icon: Icons.school_outlined, label: 'Campus', value: widget.user.campus),
+                        _InfoRow(
+                          icon: Icons.school_outlined,
+                          label: 'Campus',
+                          value: widget.user.campus,
+                        ),
                         const Divider(color: T.border, thickness: 1, height: 1),
                         _InfoRow(
                           icon: Icons.lock_outline_rounded,
@@ -537,9 +571,17 @@ class _ProfileScreenState extends State<ProfileScreen> {
                               : widget.user.lockerLocation,
                         ),
                         const Divider(color: T.border, thickness: 1, height: 1),
-                        _InfoRow(icon: Icons.email_outlined, label: 'Email', value: widget.user.email),
+                        _InfoRow(
+                          icon: Icons.email_outlined,
+                          label: 'Email',
+                          value: widget.user.email,
+                        ),
                         const Divider(color: T.border, thickness: 1, height: 1),
-                        _InfoRow(icon: Icons.event_outlined, label: 'Date Joined', value: _joinedLabel),
+                        _InfoRow(
+                          icon: Icons.event_outlined,
+                          label: 'Date Joined',
+                          value: _joinedLabel,
+                        ),
                       ],
                     ),
                   ),
@@ -559,7 +601,10 @@ class _ProfileScreenState extends State<ProfileScreen> {
       decoration: BoxDecoration(
         color: bg,
         borderRadius: BorderRadius.circular(T.r8),
-        border: Border.all(color: color.withValues(alpha: 0.3), width: T.strokeSm),
+        border: Border.all(
+          color: color.withValues(alpha: 0.3),
+          width: T.strokeSm,
+        ),
       ),
       child: Icon(icon, color: color, size: 14),
     );
@@ -581,7 +626,12 @@ class _ProfileScreenState extends State<ProfileScreen> {
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Padding(
-            padding: const EdgeInsets.fromLTRB(T.gap12, T.gap12, T.gap12, T.gap12),
+            padding: const EdgeInsets.fromLTRB(
+              T.gap12,
+              T.gap12,
+              T.gap12,
+              T.gap12,
+            ),
             child: Row(
               children: [
                 _iconChip(icon, iconColor, iconBg),

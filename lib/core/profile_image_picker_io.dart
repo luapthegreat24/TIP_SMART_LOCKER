@@ -10,7 +10,9 @@ class _IoProfileImagePicker implements ProfileImagePicker {
   final ImagePicker _picker = ImagePicker();
 
   @override
-  Future<Uint8List?> pickImageBytes({required ProfileImageSource source}) async {
+  Future<Uint8List?> pickImageBytes({
+    required ProfileImageSource source,
+  }) async {
     final imageSource = source == ProfileImageSource.camera
         ? ImageSource.camera
         : ImageSource.gallery;

@@ -6,7 +6,9 @@ ProfileImagePicker createPicker() => _UnsupportedProfileImagePicker();
 
 class _UnsupportedProfileImagePicker implements ProfileImagePicker {
   @override
-  Future<Uint8List?> pickImageBytes({required ProfileImageSource source}) async {
+  Future<Uint8List?> pickImageBytes({
+    required ProfileImageSource source,
+  }) async {
     return null;
   }
 }
