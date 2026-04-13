@@ -1,0 +1,60 @@
+{
+  "lockers": {
+    "locker_1": {
+      "fields": {
+        "building_number": {
+          "integerValue": "9"
+        },
+        "floor": {
+          "stringValue": "Ground Floor"
+        },
+        "is_assigned": {
+          "booleanValue": false
+        },
+        "last_updated": {
+          "timestampValue": "2026-04-13T12:00:00Z"
+        },
+        "locker_id": {
+          "stringValue": "locker_1"
+        },
+        "requested_state": {
+          "stringValue": ""
+        },
+        "sensor_state": {
+          "stringValue": "closed"
+        },
+        "status": {
+          "stringValue": "functional"
+        }
+      }
+    },
+    "locker_2": {
+      "fields": {
+        "building_number": {
+          "integerValue": "9"
+        },
+        "floor": {
+          "stringValue": "Ground Floor"
+        },
+        "is_assigned": {
+          "booleanValue": false
+        },
+        "last_updated": {
+          "timestampValue": "2026-04-13T12:00:00Z"
+        },
+        "locker_id": {
+          "stringValue": "locker_2"
+        },
+        "requested_state": {
+          "stringValue": ""
+        },
+        "sensor_state": {
+          "stringValue": "closed"
+        },
+        "status": {
+          "stringValue": "functional"
+        }
+      }
+    }
+  }
+}

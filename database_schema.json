@@ -1,0 +1,95 @@
+{
+  "lockers": {
+    "locker_1": {
+      "locker_id": "locker_1",
+      "building_number": 9,
+      "floor": "Ground Floor",
+
+      "sensor_state": "closed",
+      "is_assigned": true,
+      "status": "functional",
+
+      "last_updated": "2026-04-13T12:00:00+08:00",
+      "requested_state": ""
+    },
+    "locker_2": {
+      "locker_id": "locker_2",
+      "building_number": 9,
+      "floor": "Ground Floor",
+
+      "sensor_state": "closed",
+      "is_assigned": false,
+      "status": "functional",
+
+      "last_updated": "2026-04-13T12:00:00+08:00",
+      "requested_state": ""
+    }
+  },
+
+  "users": {
+    "QiK8um4SAzUaOUF2HjaiaIsnP5r2": {
+      "user_id": "QiK8um4SAzUaOUF2HjaiaIsnP5r2",
+
+      "full_name": {
+        "first_name": "PAUL",
+        "last_name": "BRAGANZA"
+      },
+
+      "email": "gabriel@tip.edu.ph",
+      "role": "student",
+      "campus": "T.I.P. Quezon City",
+
+      "settings": {
+        "autolock": true,
+        "duration": 30,
+        "notify": true
+      },
+
+      "created_at": "2026-04-12T14:57:47+08:00"
+    }
+  },
+
+  "assignments": {
+    "assignment_1": {
+      "assignment_id": "assignment_1",
+      "user_id": "QiK8um4SAzUaOUF2HjaiaIsnP5r2",
+      "locker_id": "locker_1",
+
+      "start_date": "2026-04-12T14:03:53+08:00",
+      "end_date": null,
+      "status": "active"
+    }
+  },
+
+  "logs": {
+    "log_1": {
+      "log_id": "log_1",
+
+      "user_id": "QiK8um4SAzUaOUF2HjaiaIsnP5r2",
+      "locker_id": "locker_1",
+
+      "action": "UNLOCK",
+      "source": "mobile",
+      "status": "success",
+      "message": "Locker unlocked",
+
+      "timestamp": "2026-04-12T16:54:22+08:00"
+    }
+  },
+
+  "alerts": {
+    "alert_1": {
+      "alert_id": "alert_1",
+
+      "locker_id": "locker_1",
+      "user_id": "QiK8um4SAzUaOUF2HjaiaIsnP5r2",
+
+      "type": "UNAUTHORIZED_ACCESS",
+      "message": "Locker opened without authorization",
+
+      "is_active": true,
+      "created_at": "2026-04-12T17:25:00+08:00",
+      "resolved_at": null
+    }
+  }
+}

@@ -36,11 +36,7 @@ ActivityItem _activityFromLog(LockerLogEntry log, int index) {
     'LOGIN_FAILED' ||
     'LOGOUT' ||
     'SIGNUP_SUCCESS' => ActivityType.auth,
-    'AUTH_SECURITY_ALERT' ||
-    'LOGIN_BLOCKED' ||
-    'ALERT_UNAUTHORIZED_OPEN' ||
-    'ALERT_LOCK_NOT_SECURE' ||
-    'AUTO_LOCK_FAILED' => ActivityType.security,
+    'ALERT_UNAUTHORIZED_OPEN' => ActivityType.security,
     'SETTING_CHANGED' => ActivityType.settings,
     _ => ActivityType.system,
   };
@@ -60,13 +56,11 @@ ActivityItem _activityFromLog(LockerLogEntry log, int index) {
     'LOGIN_SUCCESS' => 'Successful sign in',
     'LOGIN_FAILED' => 'Failed sign in attempt',
     'LOGIN_BLOCKED' => 'Sign in blocked due to lockout',
-    'AUTH_SECURITY_ALERT' => 'Security alert: repeated failed sign-ins',
     'ALERT_UNAUTHORIZED_OPEN' =>
       'ALERT: Door opened without authorized app/RFID access',
-    'ALERT_LOCK_NOT_SECURE' =>
-      'WARNING: Door is open while locker is commanded LOCKED',
-    'AUTO_LOCK_FAILED' =>
-      'ALERT: Auto-lock failed because the door remained open',
+    'AUTH_SECURITY_ALERT' => 'Sign-in security event recorded',
+    'ALERT_LOCK_NOT_SECURE' => 'Door open while lock commanded',
+    'AUTO_LOCK_FAILED' => 'Auto-lock failed because door remained open',
     'LOGOUT' => 'User signed out',
     'SIGNUP_SUCCESS' => 'New account registered',
     'SETTING_CHANGED' => 'Setting updated',
@@ -83,10 +77,12 @@ ActivityItem _activityFromLog(LockerLogEntry log, int index) {
 
   return ActivityItem(
     index: index,
+    logId: log.id,
     description: description,
     method: log.authMethod.trim().isEmpty ? 'System' : log.authMethod,
     date: date,
     time: _formatTime(when),
+    occurredAt: when,
     type: type,
     eventType: log.eventType,
     status: log.status,
@@ -134,7 +130,7 @@ class _LockerDashboardScreenState extends State<LockerDashboardScreen>
   Offset? _lockFabPos;
   bool _isDraggingLockFab = false;
 
-  int get _alertCount => _activities.where(_isIntrusionAlertActivity).length;
+  int get _alertCount => _alertActive ? 1 : 0;
   DateTime? _lastToggledAt;
   bool _notifEnabled = true;
   bool _autoLock = true;
@@ -146,18 +142,9 @@ class _LockerDashboardScreenState extends State<LockerDashboardScreen>
 
   bool get _hasAssignedLocker => widget.user.activeLockerId.trim().isNotEmpty;
 
-  bool _isIntrusionAlertActivity(ActivityItem item) {
-    final event = item.eventType.toUpperCase();
-    if (event == 'ALERT_UNAUTHORIZED_OPEN' ||
-        event == 'ALERT_LOCK_NOT_SECURE' ||
-        event == 'AUTO_LOCK_FAILED') {
-      return true;
-    }
-
-    final status = item.status.toLowerCase();
-    return item.type == ActivityType.security &&
-        (status == 'alert' || status == 'warning');
-  }
+  bool _alertActive = false;
+  String _lastAlertEventId = '';
+  String _lastAlertLockerStatus = '';
 
   Color get _lockerBadgeColor => _hasAssignedLocker ? T.accent : T.amber;
 
@@ -183,9 +170,15 @@ class _LockerDashboardScreenState extends State<LockerDashboardScreen>
   final LockToastOverlay _lockToastOverlay = LockToastOverlay();
   StreamSubscription<List<LockerLogEntry>>? _logsSubscription;
   StreamSubscription<bool>? _lockerStateSubscription;
+  StreamSubscription<LockerAlertState>? _alertStateSubscription;
   Timer? _autoLockTimer;
+  Timer? _toastQueueTimer;
   DateTime? _autoLockArmedAt;
   int _autoLockGeneration = 0;
+  bool? _lastToastLocked;
+  DateTime? _lastToastAt;
+  DateTime? _lastProgressAt;
+  bool _hasReceivedLockerState = false;
 
   List<ActivityItem> _activities = const [];
 
@@ -235,15 +228,18 @@ class _LockerDashboardScreenState extends State<LockerDashboardScreen>
 
     _subscribeToLogs();
     _subscribeToLockerState();
+    _subscribeToLockerAlertState();
   }
 
   @override
   void dispose() {
     _autoLockTimer?.cancel();
+    _toastQueueTimer?.cancel();
     _lockController.removeListener(_onGlobalLockChanged);
     _lockToastOverlay.dispose();
     _logsSubscription?.cancel();
     _lockerStateSubscription?.cancel();
+    _alertStateSubscription?.cancel();
     _entranceCtrl.dispose();
     _lockCtrl.dispose();
     super.dispose();
@@ -263,7 +259,99 @@ class _LockerDashboardScreenState extends State<LockerDashboardScreen>
             return;
           }
           _lockController.setLocked(isLocked);
+          _handleConfirmedLockToast(isLocked);
         });
+  }
+
+  void _subscribeToLockerAlertState() {
+    final lockerId = widget.user.activeLockerId.trim();
+    if (lockerId.isEmpty) {
+      return;
+    }
+
+    _alertStateSubscription?.cancel();
+    _alertStateSubscription = widget.controller
+        .watchLockerAlertState(lockerId: lockerId)
+        .listen((state) {
+          if (!mounted) {
+            return;
+          }
+          final status = state.lockerStatus.toLowerCase();
+          final isOpen = status == 'open' || status == 'unlocked';
+          final isClosed = status == 'closed' || status == 'locked';
+          final wasOpen = _lastAlertLockerStatus == 'open';
+          _lastAlertLockerStatus = status;
+
+          if (isClosed) {
+            if (_alertActive) {
+              setState(() {
+                _alertActive = false;
+              });
+            }
+            _lastAlertEventId = '';
+            return;
+          }
+
+          if (!isOpen) {
+            if (_alertActive) {
+              setState(() {
+                _alertActive = false;
+              });
+            }
+            return;
+          }
+
+          if (state.alertActive && state.lastAccessEventId.isNotEmpty) {
+            if (wasOpen) {
+              return;
+            }
+            if (_lastAlertEventId == state.lastAccessEventId) {
+              return;
+            }
+            setState(() {
+              _alertActive = true;
+              _lastAlertEventId = state.lastAccessEventId;
+            });
+          } else if (_alertActive) {
+            setState(() {
+              _alertActive = false;
+            });
+          }
+        });
+  }
+
+  void _handleConfirmedLockToast(bool isLocked) {
+    if (!_hasReceivedLockerState) {
+      _hasReceivedLockerState = true;
+      _lastToastLocked = isLocked;
+      return;
+    }
+
+    if (_lastToastLocked == isLocked) {
+      return;
+    }
+
+    final now = DateTime.now();
+    if (_lastToastAt != null &&
+        now.difference(_lastToastAt!) < const Duration(milliseconds: 900)) {
+      return;
+    }
+
+    _toastQueueTimer?.cancel();
+    final delayMs = _lastProgressAt == null
+        ? 120
+        : (900 - now.difference(_lastProgressAt!).inMilliseconds).clamp(0, 900);
+    _toastQueueTimer = Timer(Duration(milliseconds: delayMs), () {
+      _lastToastLocked = isLocked;
+      _lastToastAt = DateTime.now();
+      unawaited(
+        _lockToastOverlay.show(
+          context: context,
+          vsync: this,
+          isLocked: isLocked,
+        ),
+      );
+    });
   }
 
   void _onGlobalLockChanged() {
@@ -310,10 +398,7 @@ class _LockerDashboardScreenState extends State<LockerDashboardScreen>
     );
   }
 
-  Future<void> _toggleLock({
-    bool showToast = true,
-    bool playHaptic = true,
-  }) async {
+  Future<void> _toggleLock({bool playHaptic = true}) async {
     final targetLocked = !_lockController.isLocked;
     if (playHaptic) {
       HapticFeedback.heavyImpact();
@@ -331,6 +416,7 @@ class _LockerDashboardScreenState extends State<LockerDashboardScreen>
         duration: const Duration(milliseconds: 1400),
       ),
     );
+    _lastProgressAt = DateTime.now();
 
     final userId = widget.user.userId.trim();
     final lockerId = widget.user.activeLockerId.trim();
@@ -355,16 +441,6 @@ class _LockerDashboardScreenState extends State<LockerDashboardScreen>
           ),
         );
         return;
-      }
-
-      if (showToast) {
-        unawaited(
-          _lockToastOverlay.show(
-            context: context,
-            vsync: this,
-            isLocked: targetLocked,
-          ),
-        );
       }
 
       // ESP32 writes lock-state logs after physical action to keep one source
@@ -424,9 +500,7 @@ class _LockerDashboardScreenState extends State<LockerDashboardScreen>
         return;
       }
       if (error == null) {
-        unawaited(
-          _lockToastOverlay.show(context: context, vsync: this, isLocked: true),
-        );
+        // Confirmed state toast will come from locker state stream.
       } else {
         unawaited(
           _lockToastOverlay.showState(
@@ -448,6 +522,13 @@ class _LockerDashboardScreenState extends State<LockerDashboardScreen>
       return;
     }
 
+    const hiddenEvents = {
+      'ALERT_UNAUTHORIZED_OPEN',
+      'AUTO_LOCK',
+      'AUTO_LOCK_FAILED',
+      'ALERT_LOCK_NOT_SECURE',
+    };
+
     _logsSubscription = widget.controller
         .watchLogsForUser(userId: userId, email: widget.user.email)
         .listen((entries) {
@@ -457,6 +538,10 @@ class _LockerDashboardScreenState extends State<LockerDashboardScreen>
 
           final items = <ActivityItem>[];
           for (var i = 0; i < entries.length; i++) {
+            final event = entries[i].eventType.toUpperCase();
+            if (hiddenEvents.contains(event)) {
+              continue;
+            }
             items.add(_activityFromLog(entries[i], i + 1));
           }
 
@@ -1729,14 +1814,6 @@ class _ActivityLogPageState extends State<_ActivityLogPage>
         );
         return;
       }
-
-      unawaited(
-        _lockToastOverlay.show(
-          context: context,
-          vsync: this,
-          isLocked: targetLocked,
-        ),
-      );
     }
 
     // ESP32 writes lock-state logs after physical action to keep one source

@@ -285,14 +285,6 @@ class _LockerMapScreenState extends State<LockerMapScreen>
         return;
       }
 
-      unawaited(
-        _lockToastOverlay.show(
-          context: context,
-          vsync: this,
-          isLocked: targetLocked,
-        ),
-      );
-
       // Lock/unlock activity logs are written by the ESP32 after physical action
       // to avoid duplicate app-side and hardware-side entries.
     }

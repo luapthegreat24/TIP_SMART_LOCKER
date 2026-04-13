@@ -19,7 +19,7 @@
 
 // -------------------- FIREBASE CONFIG -----------------------
 #define API_KEY "AIzaSyBPtnK-dS2B7ejyNg06U6473yYpxUUQzmg"
-#define FIREBASE_PROJECT_ID "tip-locker"
+#define PROJECT_ID "tip-locker"
 
 // For Firestore in Firebase_ESP_Client: empty string means (default) database.
 #define FIRESTORE_DB ""
@@ -464,7 +464,7 @@ bool readLockerDoc(size_t index) {
   String docPath = String("lockers/") + lockerConfigs[index].lockerId;
   bool ok = Firebase.Firestore.getDocument(
       &readFbdo,
-      FIREBASE_PROJECT_ID,
+      PROJECT_ID,
       FIRESTORE_DB,
       docPath.c_str(),
       "");
@@ -581,7 +581,7 @@ bool updateLockerStatus(size_t index, const String &newStatus, const String &sou
 
   bool ok = Firebase.Firestore.patchDocument(
       &fbdo,
-      FIREBASE_PROJECT_ID,
+      PROJECT_ID,
       FIRESTORE_DB,
       docPath.c_str(),
       content.raw(),
@@ -611,7 +611,7 @@ bool updateLockerAlert(size_t index, bool active, const String &label, const Str
   const String updateMask = "alert_active,alert_label,alert_message,alert_updated_at";
   bool ok = Firebase.Firestore.patchDocument(
       &fbdo,
-      FIREBASE_PROJECT_ID,
+      PROJECT_ID,
       FIRESTORE_DB,
       docPath.c_str(),
       content.raw(),
@@ -655,7 +655,7 @@ bool createAccessLog(
   Serial.println("[Firestore] CREATE logs/<auto-id>");
   bool ok = Firebase.Firestore.createDocument(
       &fbdo,
-      FIREBASE_PROJECT_ID,
+      PROJECT_ID,
       FIRESTORE_DB,
       "logs",
       content.raw());

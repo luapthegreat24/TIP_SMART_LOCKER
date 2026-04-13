@@ -119,7 +119,6 @@ class AuthController extends ChangeNotifier {
   static const String _lockersCollection = 'lockers';
   static const String _logsCollection = 'logs';
   static const String _assignmentsCollection = 'assignments';
-  static const String _authSecurityAuditCollection = 'auth_security_audit';
   static const Duration _lockerCommandCooldown = Duration(seconds: 2);
   static const Set<String> _allowedLockerCommandSources = {
     'dashboard_fab',
@@ -132,24 +131,22 @@ class AuthController extends ChangeNotifier {
     : _store = store,
       _useFirebase = false,
       _auth = null,
-      _firestore = null {
+      _firestore = FirebaseFirestore.instance {
     _esp32Service = Esp32CommandService();
   }
 
-  AuthController.firebase({FirebaseAuth? auth, FirebaseFirestore? firestore})
+  AuthController.firebase({FirebaseAuth? auth})
     : _store = null,
       _useFirebase = true,
       _auth = auth ?? FirebaseAuth.instance,
-      _firestore = firestore ?? FirebaseFirestore.instance {
-    _esp32Service = Esp32CommandService(
-      firestore: firestore ?? FirebaseFirestore.instance,
-    );
+      _firestore = FirebaseFirestore.instance {
+    _esp32Service = Esp32CommandService();
   }
 
   final AuthLocalStore? _store;
   final bool _useFirebase;
   final FirebaseAuth? _auth;
-  final FirebaseFirestore? _firestore;
+  final FirebaseFirestore _firestore;
   late final Esp32CommandService _esp32Service;
 
   final Map<String, _StoredAccount> _accounts = {};
@@ -244,7 +241,7 @@ class AuthController extends ChangeNotifier {
 
   Stream<List<LockerBuildingAvailability>> watchBuildingAvailability() {
     final firestore = _firestore;
-    if (!_useFirebase || firestore == null) {
+    if (!_useFirebase) {
       return const Stream<List<LockerBuildingAvailability>>.empty();
     }
 
@@ -290,7 +287,7 @@ class AuthController extends ChangeNotifier {
     required String floor,
   }) {
     final firestore = _firestore;
-    if (!_useFirebase || firestore == null) {
+    if (!_useFirebase) {
       return const Stream<List<LockerSlot>>.empty();
     }
 
@@ -319,59 +316,102 @@ class AuthController extends ChangeNotifier {
   Stream<bool> watchLockerLockedState({required String lockerId}) {
     final firestore = _firestore;
     final trimmedLockerId = lockerId.trim();
-    if (!_useFirebase || firestore == null || trimmedLockerId.isEmpty) {
+    if (!_useFirebase || trimmedLockerId.isEmpty) {
       return const Stream<bool>.empty();
     }
 
-    return firestore
+    final snapshots = firestore
         .collection(_lockersCollection)
         .doc(trimmedLockerId)
-        .snapshots()
-        .map((snapshot) {
+        .snapshots();
+
+    return Stream<bool>.multi((controller) {
+      bool? lastKnownLocked;
+
+      final sub = snapshots.listen(
+        (snapshot) {
           final data = snapshot.data();
           if (data == null) {
-            return true;
+            debugPrint('watchLockerLockedState: missing locker data');
+            return;
           }
 
-          final hardwareStatus = (data['hardware_status'] as String? ?? '')
+          // Use sensor_state as single source of truth
+          final sensorState = (data['sensor_state'] as String? ?? '')
               .trim()
               .toLowerCase();
-          if (hardwareStatus == 'locked') {
-            return true;
+
+          if (sensorState == 'closed') {
+            lastKnownLocked = true;
+            controller.add(true);
+            return;
           }
-          if (hardwareStatus == 'unlocked') {
-            return false;
+          if (sensorState == 'open') {
+            lastKnownLocked = false;
+            controller.add(false);
+            return;
           }
 
-          final sensorClosed = data['sensor_closed'];
-          if (sensorClosed is bool) {
-            return sensorClosed;
+          if (lastKnownLocked != null) {
+            controller.add(lastKnownLocked!);
+          } else {
+            debugPrint(
+              'watchLockerLockedState: sensor_state missing, no state emitted',
+            );
+          }
+        },
+        onError: (Object error, StackTrace stackTrace) {
+          debugPrint('watchLockerLockedState stream error: $error');
+          controller.addError(error, stackTrace);
+        },
+      );
+
+      controller.onCancel = () => sub.cancel();
+    });
+  }
+
+  Stream<LockerAlertState> watchLockerAlertState({required String lockerId}) {
+    final firestore = _firestore;
+    final trimmedLockerId = lockerId.trim();
+    if (!_useFirebase || trimmedLockerId.isEmpty) {
+      return const Stream<LockerAlertState>.empty();
+    }
+
+    return firestore
+        .collection('alerts')
+        .where('locker_id', isEqualTo: trimmedLockerId)
+        .where('is_active', isEqualTo: true)
+        .limit(1)
+        .snapshots()
+        .map((snapshot) {
+          if (snapshot.docs.isEmpty) {
+            return const LockerAlertState(
+              lockerStatus: '',
+              previousState: '',
+              lastAccessType: '',
+              lastAccessAuthorized: true,
+              lastAccessEventId: '',
+              lastAuthorizedEventId: '',
+              alertActive: false,
+            );
           }
 
-          final magneticSensor = (data['magnetic_sensor'] as String? ?? '')
-              .trim()
-              .toLowerCase();
-          if (magneticSensor == 'closed') {
-            return true;
-          }
-          if (magneticSensor == 'open') {
-            return false;
-          }
+          final alert = snapshot.docs.first;
+          final data = alert.data();
+          final type = (data['type'] as String? ?? '').trim();
 
-          final lockState = (data['lock_state'] as String? ?? '')
-              .trim()
-              .toLowerCase();
-          if (lockState == 'locked') {
-            return true;
-          }
-          if (lockState == 'unlocked') {
-            return false;
-          }
-
-          return true;
+          return LockerAlertState(
+            lockerStatus: 'alert',
+            previousState: '',
+            lastAccessType: type,
+            lastAccessAuthorized: false,
+            lastAccessEventId: alert.id,
+            lastAuthorizedEventId: '',
+            alertActive: true,
+          );
         })
         .handleError((error, stack) {
-          debugPrint('watchLockerLockedState stream error: $error');
+          debugPrint('watchLockerAlertState stream error: $error');
         });
   }
 
@@ -385,7 +425,7 @@ class AuthController extends ChangeNotifier {
     final authUser = _auth?.currentUser;
     final currentUser = _currentUser;
     final trimmedLockerId = lockerId.trim();
-    if (!_useFirebase || firestore == null) {
+    if (!_useFirebase) {
       return 'Locker control is only available in Firebase mode.';
     }
     if (authUser == null || currentUser == null) {
@@ -414,26 +454,15 @@ class AuthController extends ChangeNotifier {
     }
 
     try {
-      await firestore.collection(_lockersCollection).doc(trimmedLockerId).set({
-        'status': 'functional',
-        'target_lock_state': locked ? 'locked' : 'unlocked',
-        'action': locked ? 'lock' : 'unlock',
-        'command_status': 'pending',
-        'last_source': normalizedSource,
-        'uid': uid,
-        'requested_by_user_id': authUser.uid,
-        'command_nonce':
-            '${authUser.uid}_${DateTime.now().millisecondsSinceEpoch}',
-        'updated_at': FieldValue.serverTimestamp(),
-      }, SetOptions(merge: true));
-
-      // Send command to ESP32 via Firestore
-      await _esp32Service.sendLockerCommand(
+      final commandError = await _esp32Service.sendLockerCommand(
         lockerId: trimmedLockerId,
         lock: locked,
         userId: authUser.uid,
         source: normalizedSource,
       );
+      if (commandError != null) {
+        return commandError;
+      }
 
       _lastLockerCommandAtByLocker[trimmedLockerId] = DateTime.now();
       return null;
@@ -460,9 +489,12 @@ class AuthController extends ChangeNotifier {
   String _normalizeLockerCommandSource(String source) {
     final normalized = source.trim().toLowerCase();
     if (_allowedLockerCommandSources.contains(normalized)) {
-      return normalized;
+      return 'mobile';
     }
-    return 'mobile_app';
+    if (normalized == 'rfid') {
+      return 'rfid';
+    }
+    return 'mobile';
   }
 
   String? _validateLockerCommandRateLimit(String lockerId) {
@@ -486,19 +518,19 @@ class AuthController extends ChangeNotifier {
     required String currentUserId,
   }) async {
     final snapshot = await firestore
-        .collection(_lockersCollection)
+        .collection(_assignmentsCollection)
         .doc(lockerId)
         .get();
     if (!snapshot.exists) {
-      return 'Assigned locker no longer exists.';
+      return 'Locker assignment record is missing.';
     }
 
     final data = snapshot.data() ?? const <String, dynamic>{};
-    final assignedUserId =
-        (data['assigned_user_id'] as String? ??
-                data['current_user_id'] as String? ??
-                '')
-            .trim();
+    final assignedUserId = (data['user_id'] as String? ?? '').trim();
+    final status = (data['status'] as String? ?? '').trim().toLowerCase();
+    if (status != 'active') {
+      return 'Locker assignment is not active.';
+    }
     if (assignedUserId.isNotEmpty && assignedUserId != currentUserId) {
       return 'This locker is assigned to another user.';
     }
@@ -510,7 +542,7 @@ class AuthController extends ChangeNotifier {
     required int buildingNumber,
   }) {
     final firestore = _firestore;
-    if (!_useFirebase || firestore == null) {
+    if (!_useFirebase) {
       return const Stream<Map<String, int>>.empty();
     }
 
@@ -576,7 +608,6 @@ class AuthController extends ChangeNotifier {
         status: 'success',
         details: 'Locker assigned to user profile.',
         source: 'locker_assignment',
-        metadata: {'locker_location': refreshed.lockerLocation},
       );
       notifyListeners();
       return null;
@@ -598,63 +629,22 @@ class AuthController extends ChangeNotifier {
     int limit = 200,
   }) {
     final firestore = _firestore;
-    if (!_useFirebase || userId.trim().isEmpty || firestore == null) {
+    if (!_useFirebase || userId.trim().isEmpty) {
       return const Stream<List<LockerLogEntry>>.empty();
     }
 
-    final normalizedEmail = email?.trim().toLowerCase() ?? '';
     final userLogs = firestore
         .collection(_logsCollection)
         .where('user_id', isEqualTo: userId)
+        .orderBy('timestamp', descending: true)
         .limit(limit)
         .snapshots();
 
-    if (normalizedEmail.isEmpty) {
-      return userLogs
-          .handleError((error, stack) {
-            debugPrint('watchLogsForUser stream error: $error');
-          })
-          .map(_mapLogSnapshot);
-    }
-
-    final emailLogs = firestore
-        .collection(_logsCollection)
-        .where('metadata.email', isEqualTo: normalizedEmail)
-        .limit(limit)
-        .snapshots()
+    return userLogs
         .handleError((error, stack) {
-          debugPrint('watchLogsForUser email stream error: $error');
-        });
-
-    return Stream<List<LockerLogEntry>>.multi((controller) {
-      var userItems = <LockerLogEntry>[];
-      var emailItems = <LockerLogEntry>[];
-
-      void emitMerged() {
-        final merged = <String, LockerLogEntry>{
-          for (final item in userItems) item.id: item,
-          for (final item in emailItems) item.id: item,
-        };
-        final values = merged.values.toList(growable: false)
-          ..sort((a, b) => b.occurredAt.compareTo(a.occurredAt));
-        controller.add(values);
-      }
-
-      final userSub = userLogs.listen((snapshot) {
-        userItems = _mapLogSnapshot(snapshot);
-        emitMerged();
-      }, onError: controller.addError);
-
-      final emailSub = emailLogs.listen((snapshot) {
-        emailItems = _mapLogSnapshot(snapshot);
-        emitMerged();
-      }, onError: controller.addError);
-
-      controller.onCancel = () async {
-        await userSub.cancel();
-        await emailSub.cancel();
-      };
-    });
+          debugPrint('watchLogsForUser stream error: $error');
+        })
+        .map(_mapLogSnapshot);
   }
 
   List<LockerLogEntry> _mapLogSnapshot(
@@ -689,28 +679,21 @@ class AuthController extends ChangeNotifier {
     }
 
     final firestore = _firestore;
-    if (firestore == null) {
-      debugPrint('addLogEvent skipped: Firestore is not ready.');
-      return;
-    }
 
     try {
-      final serverNow = FieldValue.serverTimestamp();
-      await firestore.collection(_logsCollection).add({
+      final normalizedSource = _normalizeLogSource(source);
+      final action = eventType.trim().isEmpty ? 'SYSTEM_EVENT' : eventType;
+      final normalizedStatus = _normalizeLogStatus(status);
+      final logRef = firestore.collection(_logsCollection).doc();
+      await logRef.set({
+        'log_id': logRef.id,
         'user_id': userId,
         'locker_id': lockerId,
-        'event_type': eventType.trim().isEmpty ? 'UNKNOWN' : eventType,
-        'auth_method': authMethod.trim().isEmpty ? 'Unknown' : authMethod,
-        'source': source,
-        'status': status,
-        'details': details ?? '',
-        'timestamp': serverNow,
-        // New canonical field for future queries while preserving legacy support.
-        'created_at': serverNow,
-        // Ensures deterministic ordering for local pending writes before
-        // Firestore resolves server timestamps.
-        'client_timestamp': Timestamp.now(),
-        if (metadata != null && metadata.isNotEmpty) 'metadata': metadata,
+        'action': action,
+        'source': normalizedSource,
+        'status': normalizedStatus,
+        'message': details ?? action,
+        'timestamp': FieldValue.serverTimestamp(),
       });
     } on FirebaseException catch (e, st) {
       debugPrint('addLogEvent failed: code=${e.code}, message=${e.message}');
@@ -719,6 +702,31 @@ class AuthController extends ChangeNotifier {
       debugPrint('addLogEvent unexpected failure: $e');
       debugPrint(st.toString());
     }
+  }
+
+  String _normalizeLogSource(String source) {
+    final normalized = source.trim().toLowerCase();
+    if (normalized.contains('rfid')) {
+      return 'rfid';
+    }
+    if (normalized.contains('mobile') ||
+        normalized.contains('dashboard') ||
+        normalized.contains('map') ||
+        normalized.contains('activity')) {
+      return 'mobile';
+    }
+    return 'system';
+  }
+
+  String _normalizeLogStatus(String status) {
+    final normalized = status.trim().toLowerCase();
+    if (normalized == 'success') {
+      return 'success';
+    }
+    if (normalized == 'failed') {
+      return 'failed';
+    }
+    return 'failed';
   }
 
   bool get isAuthenticated => _currentUser != null;
@@ -972,7 +980,7 @@ class AuthController extends ChangeNotifier {
       );
 
       try {
-        await _firestore!.collection(_usersCollection).doc(userId).delete();
+        await _firestore.collection(_usersCollection).doc(userId).delete();
       } on FirebaseException catch (e) {
         if (e.code != 'not-found') {
           rethrow;
@@ -1053,7 +1061,7 @@ class AuthController extends ChangeNotifier {
 
     final firestore = _firestore;
     final authUser = _auth?.currentUser;
-    if (firestore == null || authUser == null) {
+    if (authUser == null) {
       return 'You are not logged in.';
     }
 
@@ -1064,10 +1072,6 @@ class AuthController extends ChangeNotifier {
           'first_name': trimmedFirstName,
           'last_name': trimmedLastName,
         },
-        // Backward compatibility with existing flat-name readers.
-        'firstName': trimmedFirstName,
-        'lastName': trimmedLastName,
-        'updated_at': FieldValue.serverTimestamp(),
       }, SetOptions(merge: true));
 
       final updatedUser = current.copyWith(
@@ -1164,73 +1168,8 @@ class AuthController extends ChangeNotifier {
   }
 
   Future<void> _normalizeLockerDocuments() async {
-    if (!_useFirebase || _firestore == null) {
-      return;
-    }
-
-    try {
-      final snapshot = await _firestore.collection(_lockersCollection).get();
-      for (final doc in snapshot.docs) {
-        final data = doc.data();
-        final currentStatus = (data['status'] as String? ?? '')
-            .trim()
-            .toLowerCase();
-        final assignedUserId = (data['assigned_user_id'] as String? ?? '')
-            .trim();
-        final currentUserId = (data['current_user_id'] as String? ?? '').trim();
-
-        var canonicalAssignedUserId = assignedUserId.isNotEmpty
-            ? assignedUserId
-            : '';
-
-        if (canonicalAssignedUserId.isNotEmpty) {
-          try {
-            final userSnapshot = await _firestore
-                .collection(_usersCollection)
-                .doc(canonicalAssignedUserId)
-                .get();
-            final userData = userSnapshot.data();
-            final userLockerId =
-                (userData?['active_locker_id'] as String? ?? '').trim();
-            if (!userSnapshot.exists || userLockerId != doc.id) {
-              canonicalAssignedUserId = '';
-            }
-          } catch (_) {
-            // Keep existing assignment on transient read errors.
-          }
-        }
-        final isAssigned = canonicalAssignedUserId.isNotEmpty;
-
-        final patch = <String, dynamic>{
-          'is_assigned': isAssigned,
-          'is_occupied': isAssigned,
-        };
-
-        if (isAssigned) {
-          patch['assigned_user_id'] = canonicalAssignedUserId;
-        } else {
-          patch['assigned_user_id'] = '';
-          if (currentUserId.isNotEmpty) {
-            patch['current_user_id'] = FieldValue.delete();
-            patch['current_user_email'] = FieldValue.delete();
-          }
-        }
-
-        // Keep locker availability separate from lock state.
-        if (currentStatus == 'locked' ||
-            currentStatus == 'unlocked' ||
-            currentStatus == 'intrusion_detected') {
-          patch['status'] = 'functional';
-        }
-
-        patch['updated_at'] = FieldValue.serverTimestamp();
-
-        await doc.reference.set(patch, SetOptions(merge: true));
-      }
-    } catch (e, st) {
-      debugPrint('_normalizeLockerDocuments failed: $e');
-      debugPrint(st.toString());
-    }
+    // No-op: legacy locker/user cross-field normalization removed.
+    return;
   }
 
   Future<void> _warmFirebaseCaches() async {
@@ -1368,9 +1307,7 @@ class AuthController extends ChangeNotifier {
         return 'An account with this email already exists. Log in instead.';
       }
 
-      final userRef = _firestore!
-          .collection(_usersCollection)
-          .doc(authUser.uid);
+      final userRef = _firestore.collection(_usersCollection).doc(authUser.uid);
       final userSnapshot = await userRef.get();
       if (!userSnapshot.exists || userSnapshot.data() == null) {
         await _createUserProfileInFirestore(
@@ -1449,10 +1386,6 @@ class AuthController extends ChangeNotifier {
       }
 
       final firestore = _firestore;
-      if (firestore == null) {
-        await _safeFirebaseSignOut();
-        return 'Authentication service is not ready. Please try again.';
-      }
 
       final userDocRef = firestore
           .collection(_usersCollection)
@@ -1463,16 +1396,17 @@ class AuthController extends ChangeNotifier {
         return 'User profile not found. Contact admin.';
       }
 
-      var data = userSnapshot.data()!;
-      final activeLockerId = (data['active_locker_id'] as String? ?? '').trim();
-
-      _currentUser = _fromFirebaseUserData(authUser.uid, data);
+      _currentUser = await _readFirebaseUser(authUser.uid);
+      if (_currentUser == null) {
+        await _safeFirebaseSignOut();
+        return 'User profile not found. Contact admin.';
+      }
       if (!_recentlyLoggedInEmails.contains(normalizedEmail)) {
         _recentlyLoggedInEmails.add(normalizedEmail);
       }
       _firebaseLoginProfiles[normalizedEmail] = _FirebaseLoginProfile(
         user: _currentUser!,
-        hasActiveLocker: activeLockerId.isNotEmpty,
+        hasActiveLocker: _currentUser!.activeLockerId.isNotEmpty,
       );
       await _flushPendingAuthEventsForEmail(
         normalizedEmail: normalizedEmail,
@@ -1602,27 +1536,64 @@ class AuthController extends ChangeNotifier {
   }
 
   Future<AppUser?> _readFirebaseUser(String uid) async {
-    final snapshot = await _firestore!
+    final snapshot = await _firestore
         .collection(_usersCollection)
         .doc(uid)
         .get();
     if (!snapshot.exists) {
       return null;
     }
-    return _readFirebaseUserSync(uid, snapshot.data());
+    final base = _readFirebaseUserSync(uid, snapshot.data());
+    if (base == null) {
+      return null;
+    }
+
+    try {
+      final assignmentSnapshot = await _firestore
+          .collection(_assignmentsCollection)
+          .where('user_id', isEqualTo: uid)
+          .where('status', isEqualTo: 'active')
+          .limit(1)
+          .get();
+
+      if (assignmentSnapshot.docs.isEmpty) {
+        return base.copyWith(activeLockerId: '', lockerLocation: '');
+      }
+
+      final assignmentData = assignmentSnapshot.docs.first.data();
+      final activeLockerId =
+          (assignmentData['locker_id'] as String? ??
+                  assignmentSnapshot.docs.first.id)
+              .trim();
+
+      var lockerLocation = '';
+      if (activeLockerId.isNotEmpty) {
+        final lockerSnapshot = await _firestore
+            .collection(_lockersCollection)
+            .doc(activeLockerId)
+            .get();
+        final lockerData = lockerSnapshot.data();
+        final building = (lockerData?['building_number'] as num?)?.toInt() ?? 0;
+        final floor = (lockerData?['floor'] as String? ?? '').trim();
+        if (building > 0 && floor.isNotEmpty) {
+          lockerLocation = 'Building $building, $floor';
+        }
+      }
+
+      return base.copyWith(
+        activeLockerId: activeLockerId,
+        lockerLocation: lockerLocation,
+      );
+    } catch (_) {
+      return base;
+    }
   }
 
   AppUser _fromFirebaseUserData(String uid, Map<String, dynamic> data) {
     final fullName = data['full_name'];
     final fullNameMap = fullName is Map ? fullName : <String, dynamic>{};
-    final firstName =
-        fullNameMap['first_name'] as String? ??
-        data['firstName'] as String? ??
-        '';
-    final lastName =
-        fullNameMap['last_name'] as String? ??
-        data['lastName'] as String? ??
-        '';
+    final firstName = fullNameMap['first_name'] as String? ?? '';
+    final lastName = fullNameMap['last_name'] as String? ?? '';
     final createdAt = data['created_at'];
     final joinedAt = createdAt is Timestamp
         ? createdAt.toDate()
@@ -1634,19 +1605,10 @@ class AuthController extends ChangeNotifier {
       firstName: firstName,
       lastName: lastName,
       email: data['email'] as String? ?? '',
-      studentId:
-          data['student_number'] as String? ??
-          data['studentId'] as String? ??
-          '',
+      studentId: data['studentId'] as String? ?? '',
       campus: data['campus'] as String? ?? 'T.I.P. Quezon City',
-      lockerLocation:
-          data['locker_location'] as String? ??
-          data['lockerLocation'] as String? ??
-          '',
-      activeLockerId:
-          data['active_locker_id'] as String? ??
-          data['activeLockerId'] as String? ??
-          '',
+      lockerLocation: '',
+      activeLockerId: '',
       joinedAt: joinedAt,
       role: data['role'] as String? ?? 'student',
     );
@@ -1660,18 +1622,14 @@ class AuthController extends ChangeNotifier {
     required String studentId,
     required String campus,
   }) async {
-    await _firestore!.collection(_usersCollection).doc(userId).set({
+    await _firestore.collection(_usersCollection).doc(userId).set({
       'user_id': userId,
       'full_name': {
         'first_name': firstName.trim(),
         'last_name': lastName.trim(),
       },
       'email': email,
-      'student_number': studentId.trim(),
-      'rfid_tag': '',
       'role': 'student',
-      'active_locker_id': '',
-      'locker_location': '',
       'campus': campus.trim(),
       'settings': {'autolock': true, 'duration': 30, 'notify': true},
       'created_at': FieldValue.serverTimestamp(),
@@ -1682,94 +1640,62 @@ class AuthController extends ChangeNotifier {
     required String userId,
     required String lockerId,
   }) async {
-    final lockerRef = _firestore!.collection(_lockersCollection).doc(lockerId);
-    final userRef = _firestore.collection(_usersCollection).doc(userId);
-    final assignmentRef = _firestore.collection(_assignmentsCollection).doc();
+    final lockerRef = _firestore.collection(_lockersCollection).doc(lockerId);
+    final assignmentRef = _firestore
+        .collection(_assignmentsCollection)
+        .doc(lockerId);
+    final activeByUserQuery = _firestore
+        .collection(_assignmentsCollection)
+        .where('user_id', isEqualTo: userId)
+        .where('status', isEqualTo: 'active')
+        .limit(1);
+    final activeByUserSnapshot = await activeByUserQuery.get();
 
     await _firestore.runTransaction((transaction) async {
-      final userSnapshot = await transaction.get(userRef);
-      final userData = userSnapshot.data();
-      final previousLockerId = (userData?['active_locker_id'] as String? ?? '')
-          .trim();
-
       final freshLocker = await transaction.get(lockerRef);
+      if (!freshLocker.exists) {
+        throw StateError('Selected locker does not exist.');
+      }
       final lockerData = freshLocker.data();
       final isAssigned = (lockerData?['is_assigned'] as bool?) ?? false;
-      final isOccupied = (lockerData?['is_occupied'] as bool?) ?? false;
-      final status = (lockerData?['status'] as String?) ?? 'broken';
-      final assignedUserId = (lockerData?['assigned_user_id'] as String? ?? '')
-          .trim();
-      final occupiedBy = assignedUserId.isNotEmpty
-          ? assignedUserId
-          : (lockerData?['current_user_id'] as String? ?? '').trim();
-      final occupiedByDifferentUser =
-          isAssigned && occupiedBy.isNotEmpty && occupiedBy != userId;
+      final status = (lockerData?['status'] as String? ?? 'broken').trim();
+
+      final existingAssignment = await transaction.get(assignmentRef);
+      final existingUserId =
+          (existingAssignment.data()?['user_id'] as String? ?? '').trim();
+      final existingStatus =
+          (existingAssignment.data()?['status'] as String? ?? '')
+              .trim()
+              .toLowerCase();
+
+      final hasDifferentActiveLocker =
+          activeByUserSnapshot.docs.isNotEmpty &&
+          activeByUserSnapshot.docs.first.id != lockerId;
+
       final lockerUnavailable =
           status != 'functional' ||
-          occupiedByDifferentUser ||
-          (isAssigned && isOccupied && occupiedBy.isEmpty);
+          hasDifferentActiveLocker ||
+          (isAssigned &&
+              existingAssignment.exists &&
+              existingStatus == 'active' &&
+              existingUserId != userId);
       if (lockerUnavailable) {
         throw StateError('Selected locker is no longer available.');
       }
 
-      if (previousLockerId.isNotEmpty && previousLockerId != lockerRef.id) {
-        final previousLockerRef = _firestore
-            .collection(_lockersCollection)
-            .doc(previousLockerId);
-        final previousLockerSnapshot = await transaction.get(previousLockerRef);
-        final previousLockerData = previousLockerSnapshot.data();
-        final previousAssignedUser =
-            (previousLockerData?['assigned_user_id'] as String? ?? '').trim();
-        final ownedByUser =
-            previousAssignedUser == userId || previousAssignedUser.isEmpty;
-        if (previousLockerSnapshot.exists && ownedByUser) {
-          transaction.update(previousLockerRef, {
-            'is_occupied': false,
-            'is_assigned': false,
-            'assigned_user_id': '',
-            'status': 'functional',
-            'lock_state': 'locked',
-            'last_source': 'locker_reassign',
-            'updated_at': FieldValue.serverTimestamp(),
-            'current_user_id': FieldValue.delete(),
-            'current_user_email': FieldValue.delete(),
-            'assigned_user_name': FieldValue.delete(),
-            'assigned_to': FieldValue.delete(),
-          });
-        }
-      }
-
-      final buildingNumber =
-          (lockerData?['building_number'] as num?)?.toInt() ?? 0;
-      final floor = (lockerData?['floor'] as String? ?? '').trim();
-      final lockerLocation = buildingNumber > 0 && floor.isNotEmpty
-          ? 'Building $buildingNumber, $floor'
-          : (lockerData?['location'] as String? ?? 'Assigned Locker');
-
-      transaction.update(userRef, {
-        'active_locker_id': lockerRef.id,
-        'locker_location': lockerLocation,
-      });
-
       transaction.update(lockerRef, {
-        'is_occupied': true,
         'is_assigned': true,
-        'assigned_user_id': userId,
         'status': 'functional',
-        'last_source': 'locker_assignment',
-        'updated_at': FieldValue.serverTimestamp(),
-        'current_user_id': FieldValue.delete(),
-        'current_user_email': FieldValue.delete(),
-        'assigned_user_name': FieldValue.delete(),
-        'assigned_to': FieldValue.delete(),
+        'last_updated': FieldValue.serverTimestamp(),
       });
 
       transaction.set(assignmentRef, {
+        'assignment_id': assignmentRef.id,
         'user_id': userId,
         'locker_id': lockerRef.id,
-        'semester': 'Current Term',
         'start_date': FieldValue.serverTimestamp(),
         'end_date': null,
+        'status': 'active',
       });
     });
 
@@ -1780,61 +1706,36 @@ class AuthController extends ChangeNotifier {
     required String userId,
     required String lockerId,
   }) async {
-    final userRef = _firestore!.collection(_usersCollection).doc(userId);
     final resolvedLockerId = lockerId.trim();
-    final lockerRef = resolvedLockerId.isEmpty
-        ? null
-        : _firestore.collection(_lockersCollection).doc(resolvedLockerId);
-
-    final activeAssignments = await _firestore
+    final activeAssignmentsQuery = _firestore
         .collection(_assignmentsCollection)
         .where('user_id', isEqualTo: userId)
-        .where('end_date', isNull: true)
-        .get();
+        .where('status', isEqualTo: 'active');
+    final activeAssignmentsSnapshot = await activeAssignmentsQuery.get();
 
     await _firestore.runTransaction((transaction) async {
-      final userSnapshot = await transaction.get(userRef);
-      final userData = userSnapshot.data();
-      final userLockerId = (userData?['active_locker_id'] as String? ?? '')
-          .trim();
+      for (final doc in activeAssignmentsSnapshot.docs) {
+        final assignmentData = doc.data();
+        final assignmentLockerId =
+            (assignmentData['locker_id'] as String? ?? doc.id).trim();
+        if (resolvedLockerId.isNotEmpty &&
+            assignmentLockerId != resolvedLockerId) {
+          continue;
+        }
 
-      final lockerIdToRelease = userLockerId.isNotEmpty
-          ? userLockerId
-          : resolvedLockerId;
-
-      if (lockerIdToRelease.isNotEmpty) {
-        final targetLockerRef =
-            lockerRef != null && lockerRef.id == lockerIdToRelease
-            ? lockerRef
-            : _firestore.collection(_lockersCollection).doc(lockerIdToRelease);
-        final lockerSnapshot = await transaction.get(targetLockerRef);
-        if (lockerSnapshot.exists) {
+        if (assignmentLockerId.isNotEmpty) {
+          final targetLockerRef = _firestore
+              .collection(_lockersCollection)
+              .doc(assignmentLockerId);
           transaction.set(targetLockerRef, {
-            'is_occupied': false,
             'is_assigned': false,
-            'assigned_user_id': '',
-            'uid': '',
             'status': 'functional',
-            'lock_state': 'locked',
-            'last_source': 'account_delete',
-            'updated_at': FieldValue.serverTimestamp(),
-            'current_user_id': FieldValue.delete(),
-            'current_user_email': FieldValue.delete(),
-            'assigned_user_name': FieldValue.delete(),
-            'assigned_to': FieldValue.delete(),
+            'last_updated': FieldValue.serverTimestamp(),
           }, SetOptions(merge: true));
         }
-      }
 
-      transaction.set(userRef, {
-        'active_locker_id': '',
-        'locker_location': '',
-      }, SetOptions(merge: true));
-
-      for (final doc in activeAssignments.docs) {
         transaction.update(doc.reference, {
           'end_date': FieldValue.serverTimestamp(),
-          'ended_by': 'account_delete',
           'status': 'terminated',
         });
       }
@@ -2089,28 +1990,21 @@ class AuthController extends ChangeNotifier {
     Map<String, dynamic>? metadata,
   }) async {
     final firestore = _firestore;
-    if (!_useFirebase || firestore == null) {
+    if (!_useFirebase) {
       return false;
     }
 
     try {
-      final now = FieldValue.serverTimestamp();
-      await firestore.collection(_logsCollection).add({
+      final logRef = firestore.collection(_logsCollection).doc();
+      await logRef.set({
+        'log_id': logRef.id,
         'user_id': '__unresolved__',
         'locker_id': '',
-        'event_type': eventType,
-        'auth_method': 'Mobile App',
-        'source': source,
+        'action': eventType,
+        'source': _normalizeLogSource(source),
         'status': status,
-        'details': details,
-        'timestamp': now,
-        'created_at': now,
-        'client_timestamp': Timestamp.now(),
-        'metadata': {
-          'email': email.trim().toLowerCase(),
-          'unresolved_user': true,
-          if (metadata != null) ...metadata,
-        },
+        'message': details,
+        'timestamp': FieldValue.serverTimestamp(),
       });
       return true;
     } catch (_) {
@@ -2188,24 +2082,8 @@ class AuthController extends ChangeNotifier {
     required String source,
     Map<String, dynamic>? metadata,
   }) async {
-    if (!_useFirebase) {
-      return;
-    }
-
-    try {
-      await _firestore!.collection(_authSecurityAuditCollection).add({
-        'email': email,
-        'event_type': eventType,
-        'status': status,
-        'details': details,
-        'source': source,
-        'timestamp': FieldValue.serverTimestamp(),
-        'client_timestamp': Timestamp.now(),
-        if (metadata?.isNotEmpty ?? false) 'metadata': metadata,
-      });
-    } catch (_) {
-      // Keep auth flow responsive if fallback audit logging is denied.
-    }
+    // Disabled: security audit fallback collection is outside strict schema.
+    return;
   }
 
   String _resolveLockerIdForEmail(String normalizedEmail) {
@@ -2236,7 +2114,7 @@ class AuthController extends ChangeNotifier {
     }
 
     try {
-      final snap = await _firestore!
+      final snap = await _firestore
           .collection(_usersCollection)
           .where('email', isEqualTo: normalizedEmail)
           .limit(1)
@@ -2335,7 +2213,7 @@ class LockerSlot {
       floor: data['floor'] as String? ?? 'Ground Floor',
       floorCode: data['floor_code'] as String? ?? 'G',
       lockerNumber: lockerNumber,
-      isOccupied: isAssigned || (data['is_occupied'] as bool? ?? false),
+      isOccupied: isAssigned,
       status: data['status'] as String? ?? 'functional',
     );
   }
@@ -2372,37 +2250,26 @@ class LockerLogEntry {
     bool hasPendingWrites = false,
   }) {
     final timestamp = data['timestamp'];
-    final createdAt = data['created_at'];
-    final clientTimestamp = data['client_timestamp'];
     DateTime when;
     if (timestamp is Timestamp) {
       when = timestamp.toDate();
-    } else if (createdAt is Timestamp) {
-      when = createdAt.toDate();
-    } else if (clientTimestamp is Timestamp) {
-      when = clientTimestamp.toDate();
     } else if (hasPendingWrites) {
       when = DateTime.now();
     } else {
       when = DateTime.fromMillisecondsSinceEpoch(0);
     }
 
-    final rawMetadata = data['metadata'];
-    final metadata = rawMetadata is Map
-        ? rawMetadata.map((key, value) => MapEntry(key.toString(), value))
-        : <String, dynamic>{};
-
     return LockerLogEntry(
       id: docId,
       userId: data['user_id'] as String? ?? '',
       lockerId: data['locker_id'] as String? ?? '',
-      eventType: data['event_type'] as String? ?? 'UNKNOWN',
-      authMethod: data['auth_method'] as String? ?? 'Unknown',
-      source: data['source'] as String? ?? 'unknown',
-      status: data['status'] as String? ?? 'recorded',
-      details: data['details'] as String? ?? '',
+      eventType: data['action'] as String? ?? 'SYSTEM_EVENT',
+      authMethod: data['source'] as String? ?? 'system',
+      source: data['source'] as String? ?? 'system',
+      status: data['status'] as String? ?? 'success',
+      details: data['message'] as String? ?? '',
       occurredAt: when,
-      metadata: metadata,
+      metadata: const <String, dynamic>{},
     );
   }
 }
@@ -2431,4 +2298,24 @@ class _StoredAccount {
       password: json['password'] as String? ?? '',
     );
   }
+}
+
+class LockerAlertState {
+  const LockerAlertState({
+    required this.lockerStatus,
+    required this.previousState,
+    required this.lastAccessType,
+    required this.lastAccessAuthorized,
+    required this.lastAccessEventId,
+    required this.lastAuthorizedEventId,
+    required this.alertActive,
+  });
+
+  final String lockerStatus;
+  final String previousState;
+  final String lastAccessType;
+  final bool lastAccessAuthorized;
+  final String lastAccessEventId;
+  final String lastAuthorizedEventId;
+  final bool alertActive;
 }

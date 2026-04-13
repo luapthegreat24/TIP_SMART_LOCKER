@@ -1,0 +1,208 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // ============================================================================
+    // AUTHORITATIVE SCHEMA ENFORCEMENT
+    // Every write must match the exact schema definition
+    // Extra fields = rejected | Missing fields = rejected (partially)
+    // ============================================================================
+
+    function isString(v) {
+      return v is string;
+    }
+
+    function isNumber(v) {
+      return v is number;
+    }
+
+    function isBool(v) {
+      return v is bool;
+    }
+
+    function isTimestamp(v) {
+      return v is timestamp;
+    }
+
+    function hasOnlyKeys(data, keys) {
+      return data.keys().hasOnly(keys);
+    }
+
+    // ============================================================================
+    // LOCKERS COLLECTION
+    // ============================================================================
+    match /lockers/{lockerId} {
+      allow read: if true;
+
+      // Only system (backend/Cloud Functions) can write
+      allow create, update, delete: if false;
+
+      // Validation for server-side operations (Cloud Functions)
+      function validateLockerCreate() {
+        return hasOnlyKeys(request.resource.data, [
+          'locker_id',
+          'building_number',
+          'floor',
+          'lock_state',
+          'sensor_state',
+          'is_assigned',
+          'status',
+          'last_updated'
+        ])
+        && isString(request.resource.data.locker_id)
+        && isNumber(request.resource.data.building_number)
+        && isString(request.resource.data.floor)
+        && request.resource.data.lock_state in ['locked', 'unlocked']
+        && request.resource.data.sensor_state in ['open', 'closed']
+        && isBool(request.resource.data.is_assigned)
+        && isString(request.resource.data.status)
+        && (isTimestamp(request.resource.data.last_updated) 
+            || request.resource.data.last_updated == request.time);
+      }
+    }
+
+    // ============================================================================
+    // USERS COLLECTION
+    // ============================================================================
+    match /users/{userId} {
+      allow read: if true;
+
+      // Client writes blocked (system-managed)
+      allow create, update, delete: if false;
+
+      // Validation for server-side operations
+      function validateUserCreate() {
+        return hasOnlyKeys(request.resource.data, [
+          'user_id',
+          'full_name',
+          'email',
+          'role',
+          'campus',
+          'settings',
+          'created_at'
+        ])
+        && isString(request.resource.data.user_id)
+        && isString(request.resource.data.email)
+        && isString(request.resource.data.role)
+        && isString(request.resource.data.campus)
+        && isTimestamp(request.resource.data.created_at)
+        && validateFullName(request.resource.data.full_name)
+        && validateSettings(request.resource.data.settings);
+      }
+
+      function validateFullName(fn) {
+        return fn is map
+        && fn.keys().hasOnly(['first_name', 'last_name'])
+        && isString(fn.first_name)
+        && isString(fn.last_name);
+      }
+
+      function validateSettings(s) {
+        return s is map
+        && s.keys().hasOnly(['autolock', 'duration', 'notify'])
+        && isBool(s.autolock)
+        && isNumber(s.duration)
+        && isBool(s.notify);
+      }
+    }
+
+    // ============================================================================
+    // ASSIGNMENTS COLLECTION (document ID = locker_id)
+    // ============================================================================
+    match /assignments/{lockerId} {
+      allow read: if true;
+
+      // Client writes blocked (system-managed)
+      allow create, update, delete: if false;
+
+      // Validation for server-side operations
+      function validateAssignmentCreate() {
+        return hasOnlyKeys(request.resource.data, [
+          'assignment_id',
+          'user_id',
+          'locker_id',
+          'start_date',
+          'end_date',
+          'status'
+        ])
+        && isString(request.resource.data.assignment_id)
+        && isString(request.resource.data.user_id)
+        && isString(request.resource.data.locker_id)
+        && isTimestamp(request.resource.data.start_date)
+        && (request.resource.data.end_date == null || isTimestamp(request.resource.data.end_date))
+        && request.resource.data.status in ['active', 'terminated'];
+      }
+    }
+
+    // ============================================================================
+    // LOGS COLLECTION (immutable after creation)
+    // ============================================================================
+    match /logs/{logId} {
+      allow read: if true;
+
+      // Only authenticated clients can create logs
+      allow create: if request.auth != null
+        && hasOnlyKeys(request.resource.data, [
+          'log_id',
+          'user_id',
+          'locker_id',
+          'action',
+          'source',
+          'status',
+          'message',
+          'timestamp'
+        ])
+        && isString(request.resource.data.log_id)
+        && isString(request.resource.data.user_id)
+        && isString(request.resource.data.locker_id)
+        && request.resource.data.action in ['LOCK', 'UNLOCK', 'AUTO_LOCK', 'UNAUTHORIZED_OPEN']
+        && request.resource.data.source in ['mobile', 'rfid', 'system']
+        && request.resource.data.status in ['success', 'failed']
+        && isString(request.resource.data.message)
+        && (isTimestamp(request.resource.data.timestamp) 
+            || request.resource.data.timestamp == request.time);
+
+      // Logs are immutable after creation
+      allow update, delete: if false;
+    }
+
+    // ============================================================================
+    // ALERTS COLLECTION (server-only, created by Cloud Functions)
+    // ============================================================================
+    match /alerts/{alertId} {
+      allow read: if true;
+
+      // Client writes blocked (system-only)
+      allow create, delete: if false;
+
+      // Only server can update alerts (only specific fields)
+      allow update: if request.auth == null; // Server-side only
+
+      // Validation for server-side operations
+      function validateAlertCreate() {
+        return hasOnlyKeys(request.resource.data, [
+          'alert_id',
+          'locker_id',
+          'user_id',
+          'type',
+          'message',
+          'is_active',
+          'created_at',
+          'resolved_at'
+        ])
+        && isString(request.resource.data.alert_id)
+        && isString(request.resource.data.locker_id)
+        && (request.resource.data.user_id == null || isString(request.resource.data.user_id))
+        && request.resource.data.type in ['UNAUTHORIZED_ACCESS', 'SENSOR_ERROR']
+        && isString(request.resource.data.message)
+        && isBool(request.resource.data.is_active)
+        && isTimestamp(request.resource.data.created_at)
+        && (request.resource.data.resolved_at == null || isTimestamp(request.resource.data.resolved_at));
+      }
+
+      // Only allow updates to is_active, resolved_at, message
+      function validateAlertUpdate() {
+        return request.resource.data.diff(resource.data).affectedKeys().hasOnly(['is_active', 'resolved_at', 'message']);
+      }
+    }
+  }
+}

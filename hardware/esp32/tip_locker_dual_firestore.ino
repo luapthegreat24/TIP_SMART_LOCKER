@@ -8,8 +8,8 @@
 #include <LiquidCrystal_I2C.h>
 #include <time.h>
 
-const char *ssid = "luap";
-const char *password = "asdfghjkl";
+const char *ssid = "RADIUS8D25F";
+const char *password = "N63JVPbJVT";
 
 #define API_KEY "AIzaSyBPtnK-dS2B7ejyNg06U6473yYpxUUQzmg"
 #define FIREBASE_PROJECT_ID "tip-locker"
@@ -61,20 +61,23 @@ enum LockState { LOCKED_STATE, UNLOCKED_STATE };
 struct LockerRuntime {
   LockState currentState;
   unsigned long openedAtMs;
+  unsigned long openedAtEpochSec;
+  bool autoLockEnabled;
+  uint32_t autoLockDelaySec;
   bool sensorClosedStable;
   bool sensorClosedRaw;
   unsigned long sensorRawChangedAtMs;
 };
 
 LockerRuntime lockerRuntime[] = {
-    {LOCKED_STATE, 0, true, true, 0},
-    {LOCKED_STATE, 0, true, true, 0},
+    {LOCKED_STATE, 0, 0, true, 30, true, true, 0},
+    {LOCKED_STATE, 0, 0, true, 30, true, true, 0},
 };
 
 unsigned long lastButtonPressMs[] = {0, 0};
 const uint32_t SENSOR_DEBOUNCE_MS = 120;
 const uint32_t BUTTON_DEBOUNCE_MS = 90;
-const long interval = 30000;
+const uint32_t DEFAULT_AUTO_LOCK_SEC = 30;
 
 // FIREBASE
 FirebaseData fbdo;
@@ -92,8 +95,10 @@ void setupWiFi();
 void initFirebase();
 void initTimeSync();
 void pollFirestoreAndApply();
-bool readLockerDoc(size_t index, String &requestedStatus, String &source, String &commandNonce);
+bool readLockerDoc(size_t index, String &requestedStatus, String &source, String &commandNonce, String &userId);
 String getFieldString(FirebaseJson &payload, const char *path);
+bool getFieldBool(FirebaseJson &payload, const char *path, bool fallback);
+uint32_t getFieldUInt(FirebaseJson &payload, const char *path, uint32_t fallback);
 bool readSensorClosedRaw(size_t lockerIndex);
 void updateSensorDebounce(size_t lockerIndex);
 bool isSensorClosed(size_t lockerIndex);
@@ -103,6 +108,7 @@ void showIdleMessage();
 void closeLockerAction(int i, const String &source = "manual_button", const String &uid = "");
 void lockerAction(int lockerIndex, const String &source = "rfid_card", const String &uid = "");
 void updateLockerStatusToFirebase(int lockerIndex, const String &source, const String &uid);
+void clearCommandFromFirestore(int lockerIndex);
 bool createAccessLog(
   const String &userId,
   const String &lockerId,
@@ -115,7 +121,6 @@ bool createAccessLog(
 );
 String pseudoIsoTimestamp();
 String normalizeSource(const String &source);
-String resolveEventType(bool unlock, const String &source);
 String resolveAuthMethod(const String &source);
 
 void setup() {
@@ -140,6 +145,9 @@ void setup() {
     lockerRuntime[i].sensorRawChangedAtMs = millis();
     lockerRuntime[i].currentState = sensorClosed ? LOCKED_STATE : UNLOCKED_STATE;
     lockerRuntime[i].openedAtMs = sensorClosed ? 0 : millis();
+    lockerRuntime[i].openedAtEpochSec = 0;
+    lockerRuntime[i].autoLockEnabled = true;
+    lockerRuntime[i].autoLockDelaySec = DEFAULT_AUTO_LOCK_SEC;
   }
 
   lcd.init();
@@ -221,39 +229,53 @@ void pollFirestoreAndApply() {
     String requestedStatus;
     String source;
     String commandNonce;
+    String userId;
 
-    if (!readLockerDoc(i, requestedStatus, source, commandNonce)) {
+    if (!readLockerDoc(i, requestedStatus, source, commandNonce, userId)) {
       continue;
     }
 
-    const bool hasNewNonce =
-        commandNonce.length() > 0 && commandNonce != lastAppliedCommandNonce[i];
+    // Only act if there's a pending command
+    const bool hasCommand = requestedStatus.length() > 0 && 
+                            (requestedStatus == "open" || requestedStatus == "closed");
 
-    if (requestedStatus == "unlocked") {
-      if (lockerRuntime[i].currentState != UNLOCKED_STATE) {
-        Serial.printf("[FSM] locker_%u LOCKED -> UNLOCKED via %s\n", (unsigned)(i + 1), source.c_str());
-        lockerAction(i, source.length() ? source : "mobile_app", "");
-      } else if (hasNewNonce) {
-        // If a fresh unlock command arrives while already open, restart
-        // the 30s countdown so app-initiated unlock gets full dwell time.
-        lockerRuntime[i].openedAtMs = millis();
-        Serial.printf("[FSM] locker_%u UNLOCKED timer refreshed via new command nonce\n", (unsigned)(i + 1));
-      }
-      if (hasNewNonce) {
-        lastAppliedCommandNonce[i] = commandNonce;
-      }
-    } else if (requestedStatus == "locked" && lockerRuntime[i].currentState == UNLOCKED_STATE) {
-      Serial.printf("[FSM] locker_%u UNLOCKED -> LOCKED via %s\n", (unsigned)(i + 1), source.c_str());
-      closeLockerAction(i, source.length() ? source : "mobile_app", "");
-      if (hasNewNonce) {
-        lastAppliedCommandNonce[i] = commandNonce;
-      }
+    if (!hasCommand) {
+      continue; // No command to execute
     }
+
+    Serial.printf("[Command] Locker %u: requested=%s, current=%s, source=%s\n",
+                  (unsigned)(i + 1),
+                  requestedStatus.c_str(),
+                  lockerRuntime[i].currentState == LOCKED_STATE ? "locked" : "unlocked",
+                  source.c_str());
+
+    // STATE TRANSITIONS based on Firestore command
+    if (requestedStatus == "open" && lockerRuntime[i].currentState == LOCKED_STATE) {
+      Serial.printf("[FSM] locker_%u: LOCKED→UNLOCKED (cmd from %s)\n", (unsigned)(i + 1), source.c_str());
+      lockerAction(i, source.length() ? source : "mobile_app", userId);
+      lastAppliedCommandNonce[i] = requestedStatus;
+    } 
+    else if (requestedStatus == "closed" && lockerRuntime[i].currentState == UNLOCKED_STATE) {
+      Serial.printf("[FSM] locker_%u: UNLOCKED→LOCKED (cmd from %s)\n", (unsigned)(i + 1), source.c_str());
+      closeLockerAction(i, source.length() ? source : "mobile_app", userId);
+      lastAppliedCommandNonce[i] = requestedStatus;
+    }
+    else {
+      // Already in requested state, just mark command as processed
+      lastAppliedCommandNonce[i] = commandNonce;
+      Serial.printf("[Cmd] Already in %s state, marking nonce processed\n", requestedStatus.c_str());
+    }
+
+    // **CRITICAL**: Clear the command from Firestore after processing
+    clearCommandFromFirestore(i);
   }
 }
 
-bool readLockerDoc(size_t index, String &requestedStatus, String &source, String &commandNonce) {
+bool readLockerDoc(size_t index, String &requestedStatus, String &source, String &commandNonce, String &userId) {
   String docPath = String("lockers/") + LOCKER_IDS[index];
+  
+  Serial.printf("[Poll] Reading: %s\n", docPath.c_str());
+  
   bool ok = Firebase.Firestore.getDocument(
       &readFbdo,
       FIREBASE_PROJECT_ID,
@@ -262,55 +284,60 @@ bool readLockerDoc(size_t index, String &requestedStatus, String &source, String
       "");
 
   if (!ok) {
-    Serial.print("[Firestore] GET failed for ");
-    Serial.print(docPath);
-    Serial.print(": ");
-    Serial.println(readFbdo.errorReason());
+    Serial.printf("[Firestore] GET failed for %s: %s\n", docPath.c_str(), readFbdo.errorReason());
     return false;
   }
 
   FirebaseJson payload;
   payload.setJsonData(readFbdo.payload().c_str());
 
-  String commandStatus = getFieldString(payload, "fields/command_status/stringValue");
-  if (commandStatus.length() == 0) {
-    commandStatus = "pending";
+  // ============ COMMAND FLOW: READ REQUESTED STATE ============
+  // App sends requested_state field to trigger door open/close
+  
+  String requestedStateField = getFieldString(payload, "fields/requested_state/stringValue");
+  
+  Serial.printf("[Poll] Sensor: %s, Requested: %s\n", 
+                getFieldString(payload, "fields/sensor_state/stringValue").c_str(),
+                requestedStateField.c_str());
+  
+  requestedStatus = requestedStateField;  // open or closed (from app)
+  source = "mobile_app";  // Default source for app commands
+  userId = getFieldString(payload, "fields/assigned_user_id/stringValue");
+  if (userId.length() == 0) {
+    userId = "__unassigned__";
   }
-
-  requestedStatus = getFieldString(payload, "fields/target_lock_state/stringValue");
-  if (requestedStatus.length() == 0) {
-    requestedStatus = getFieldString(payload, "fields/lock_state/stringValue");
-  }
-  if (requestedStatus.length() == 0) {
-    String action = getFieldString(payload, "fields/action/stringValue");
-    if (action == "unlock") {
-      requestedStatus = "unlocked";
-    } else if (action == "lock") {
-      requestedStatus = "locked";
-    }
-  }
-  if (requestedStatus != "locked" && requestedStatus != "unlocked") {
-    requestedStatus = "locked";
-  }
-
-  if (commandStatus != "pending") {
-    requestedStatus = "";
-  }
-
-  source = getFieldString(payload, "fields/last_source/stringValue");
-  if (source.length() == 0) {
-    source = "mobile_app";
-  }
-
-  commandNonce = getFieldString(payload, "fields/command_nonce/stringValue");
-
-  String assigned = getFieldString(payload, "fields/assigned_user_id/stringValue");
-  if (assigned.length() == 0) {
-    assigned = getFieldString(payload, "fields/current_user_id/stringValue");
-  }
-  cachedAssignedUserId[index] = assigned;
+  cachedAssignedUserId[index] = userId;
+  commandNonce = "";  // Not in schema
+  
+  // Set default auto-lock settings (can be added to schema later)
+  lockerRuntime[index].autoLockEnabled = true;
+  lockerRuntime[index].autoLockDelaySec = DEFAULT_AUTO_LOCK_SEC;
 
   return true;
+}
+
+bool getFieldBool(FirebaseJson &payload, const char *path, bool fallback) {
+  FirebaseJsonData data;
+  if (payload.get(data, path) && data.success) {
+    return data.boolValue;
+  }
+  return fallback;
+}
+
+uint32_t getFieldUInt(FirebaseJson &payload, const char *path, uint32_t fallback) {
+  FirebaseJsonData data;
+  if (payload.get(data, path) && data.success) {
+    if (data.type == "int") {
+      return static_cast<uint32_t>(data.intValue);
+    }
+    if (data.type == "double") {
+      return static_cast<uint32_t>(data.doubleValue);
+    }
+    if (data.stringValue.length()) {
+      return static_cast<uint32_t>(data.stringValue.toInt());
+    }
+  }
+  return fallback;
 }
 
 bool readSensorClosedRaw(size_t lockerIndex) {
@@ -354,21 +381,31 @@ void processLockerLogic(size_t lockerIndex, unsigned long currentMillis) {
   if (digitalRead(lockerButtons[lockerIndex]) == LOW) {
     if (currentMillis - lastButtonPressMs[lockerIndex] >= BUTTON_DEBOUNCE_MS) {
       lastButtonPressMs[lockerIndex] = currentMillis;
+      Serial.printf("[Button] Manual close pressed on locker_%u\n", (unsigned)(lockerIndex + 1));
       closeLockerAction(lockerIndex, "manual_button", "");
       return;
     }
   }
 
-  // Intentional timeout auto-lock.
-  if (runtime.openedAtMs > 0 && (currentMillis - runtime.openedAtMs >= interval)) {
-    Serial.printf("[FSM] locker_%u timeout reached (%ld ms), auto-locking\n", (unsigned)(lockerIndex + 1), interval);
-    closeLockerAction(lockerIndex, "timeout", "");
+  // Intentional timeout auto-lock based on Firestore-configured delay.
+  if (runtime.autoLockEnabled && runtime.autoLockDelaySec > 0) {
+    const unsigned long nowEpoch = time(nullptr);
+    if (runtime.openedAtEpochSec > 0 && nowEpoch > 0) {
+      const unsigned long elapsed = nowEpoch - runtime.openedAtEpochSec;
+      if (elapsed >= runtime.autoLockDelaySec) {
+        Serial.printf("[FSM] locker_%u timeout reached (%lu s), auto-locking\n",
+                      (unsigned)(lockerIndex + 1), (unsigned long)runtime.autoLockDelaySec);
+        closeLockerAction(lockerIndex, "timeout", "");
+      }
+    }
   }
 }
 
 void triggerIntrusion(int i) {
   const String ownerId =
       cachedAssignedUserId[i].length() ? cachedAssignedUserId[i] : "__unresolved__";
+
+  Serial.printf("[ALERT] Intrusion detected on locker_%u\n", (unsigned)(i + 1));
 
   lcd.clear();
   lcd.setCursor(0, 0);
@@ -386,12 +423,13 @@ void triggerIntrusion(int i) {
       ownerId,
       LOCKER_IDS[i],
       "",
-      "ALERT_UNAUTHORIZED_OPEN",
+      "INTRUSION",           // Schema action
       "Unauthorized door open detected",
       "MAGNET_SENSOR",
-      "sensor_alert",
+      "sensor",              // Schema source
       "alert");
 
+  // Sound alarm while door is open
   while (digitalRead(magnetPins[i]) == LOW) {
     digitalWrite(openLight, HIGH);
     digitalWrite(closeLight, LOW);
@@ -409,16 +447,19 @@ void triggerIntrusion(int i) {
 
   lockerRuntime[i].currentState = LOCKED_STATE;
   lockerRuntime[i].openedAtMs = 0;
+  lockerRuntime[i].openedAtEpochSec = 0;
+  
   updateLockerStatusToFirebase(i, "sensor_alert", "");
   createAccessLog(
       ownerId,
       LOCKER_IDS[i],
       "",
-      "AUTO_LOCK",
+      "LOCK",                // Schema action
       "Locker auto-locked after intrusion was cleared",
       "SYSTEM",
-      "auto",
+      "sensor",              // Schema source
       "success");
+      
   showIdleMessage();
 }
 
@@ -452,16 +493,17 @@ void closeLockerAction(int i, const String &source, const String &uid) {
 
   lockerRuntime[i].currentState = LOCKED_STATE;
   lockerRuntime[i].openedAtMs = 0;
+  lockerRuntime[i].openedAtEpochSec = 0;
 
   updateLockerStatusToFirebase(i, source, uid);
   createAccessLog(
-      cachedAssignedUserId[i].length() ? cachedAssignedUserId[i] : "__unresolved__",
+      cachedAssignedUserId[i].length() ? cachedAssignedUserId[i] : "__unassigned__",
       LOCKER_IDS[i],
       uid,
-      resolveEventType(false, source),
+      "LOCK",               // Schema action
       "Locker locked",
       resolveAuthMethod(source),
-      normalizeSource(source),
+      normalizeSource(source),  // mobile, rfid, sensor
       "success");
 
   lcd.clear();
@@ -495,16 +537,17 @@ void lockerAction(int lockerIndex, const String &source, const String &uid) {
   digitalWrite(openLight, LOW);
 
   lockerRuntime[lockerIndex].openedAtMs = millis();
+  lockerRuntime[lockerIndex].openedAtEpochSec = time(nullptr);
 
   updateLockerStatusToFirebase(lockerIndex, source, uid);
   createAccessLog(
-      cachedAssignedUserId[lockerIndex].length() ? cachedAssignedUserId[lockerIndex] : "__unresolved__",
+      cachedAssignedUserId[lockerIndex].length() ? cachedAssignedUserId[lockerIndex] : "__unassigned__",
       LOCKER_IDS[lockerIndex],
       uid,
-      resolveEventType(true, source),
+      "UNLOCK",             // Schema action
       "Locker unlocked",
       resolveAuthMethod(source),
-      normalizeSource(source),
+      normalizeSource(source),  // mobile, rfid, sensor
       "success");
 
   showIdleMessage();
@@ -513,31 +556,31 @@ void lockerAction(int lockerIndex, const String &source, const String &uid) {
 
 void updateLockerStatusToFirebase(int lockerIndex, const String &source, const String &uid) {
   if (!Firebase.ready()) {
+    Serial.println("[Firestore] Not ready, skipping status update");
     return;
   }
 
   bool isClosed = isSensorClosed(lockerIndex);
-  String effectiveStatus = isClosed ? "locked" : "unlocked";
-  String magneticSensor = isClosed ? "closed" : "open";
+  // Single source of truth: sensor state only
+  // isClosed=true means door is closed, isClosed=false means door is open
+  String sensorStateValue = isClosed ? "open" : "closed";
 
   String docPath = String("lockers/") + LOCKER_IDS[lockerIndex];
-  FirebaseJson content;
-  content.set("fields/status/stringValue", "functional");
-  content.set("fields/lock_state/stringValue", effectiveStatus);
-    content.set("fields/target_lock_state/stringValue", effectiveStatus);
-  content.set("fields/hardware_status/stringValue", effectiveStatus);
-  content.set("fields/magnetic_sensor/stringValue", magneticSensor);
-  content.set("fields/sensor_closed/booleanValue", isClosed);
-    content.set("fields/command_status/stringValue", "idle");
-    content.set("fields/action/stringValue", "");
-  content.set("fields/last_source/stringValue", normalizeSource(source));
-  content.set("fields/last_hardware_source/stringValue", normalizeSource(source));
-  content.set("fields/uid/stringValue", uid);
-  content.set("fields/hardware_last_update/timestampValue", pseudoIsoTimestamp());
-  content.set("fields/updated_at/timestampValue", pseudoIsoTimestamp());
+  
+  Serial.printf("[Update] %s: sensor_state=%s\n", docPath.c_str(), sensorStateValue.c_str());
 
-  const String updateMask =
-      "status,lock_state,target_lock_state,hardware_status,magnetic_sensor,sensor_closed,command_status,action,last_source,last_hardware_source,uid,hardware_last_update,updated_at";
+  // ============ SINGLE SOURCE OF TRUTH: SENSOR STATE ONLY ============
+  // Only write sensor_state (remove lock_state for true data)
+  
+  FirebaseJson content;
+  
+  content.set("fields/sensor_state/stringValue", sensorStateValue);
+  content.set("fields/status/stringValue", "functional");
+  content.set("fields/last_updated/timestampValue", pseudoIsoTimestamp());
+
+  // Note: locker_id, building_number, floor, is_assigned are read-only
+
+  const String updateMask = "sensor_state,status,last_updated";
 
   bool ok = Firebase.Firestore.patchDocument(
       &fbdo,
@@ -548,8 +591,40 @@ void updateLockerStatusToFirebase(int lockerIndex, const String &source, const S
       updateMask.c_str());
 
   if (!ok) {
-    Serial.print("[Firestore] Locker update failed: ");
-    Serial.println(fbdo.errorReason());
+    Serial.printf("[Firestore] Status update FAILED: %s\n", fbdo.errorReason());
+  } else {
+    Serial.printf("[Firestore] Status updated: %s\n", docPath.c_str());
+  }
+}
+
+void clearCommandFromFirestore(int lockerIndex) {
+  if (!Firebase.ready()) {
+    Serial.println("[Firestore] Not ready, skipping command clear");
+    return;
+  }
+
+  String docPath = String("lockers/") + LOCKER_IDS[lockerIndex];
+  
+  Serial.printf("[Command] Clearing request for %s\n", docPath.c_str());
+
+  // Clear the requested_state command
+  FirebaseJson content;
+  content.set("fields/requested_state/stringValue", "");
+
+  const String updateMask = "requested_state";
+
+  bool ok = Firebase.Firestore.patchDocument(
+      &fbdo,
+      FIREBASE_PROJECT_ID,
+      FIRESTORE_DB,
+      docPath.c_str(),
+      content.raw(),
+      updateMask.c_str());
+
+  if (!ok) {
+    Serial.printf("[Firestore] Command clear FAILED: %s\n", fbdo.errorReason());
+  } else {
+    Serial.printf("[Firestore] Command cleared\n");
   }
 }
 
@@ -569,18 +644,20 @@ bool createAccessLog(
   FirebaseJson content;
   const String ts = pseudoIsoTimestamp();
 
+  // ============ FIREBASE.SCHEMA STRICT LOG FIELDS ============
+  // Logs collection schema: user_id, locker_id, action, source, status, message, timestamp
+  // (log_id is auto-generated)
+  
   content.set("fields/user_id/stringValue", userId);
   content.set("fields/locker_id/stringValue", lockerId);
-  content.set("fields/uid/stringValue", uid);
-  content.set("fields/action/stringValue", eventType);
-  content.set("fields/event_type/stringValue", eventType);
-  content.set("fields/auth_method/stringValue", authMethod);
-  content.set("fields/source/stringValue", source);
-  content.set("fields/status/stringValue", status);
-  content.set("fields/details/stringValue", note);
+  content.set("fields/action/stringValue", eventType);    // UNLOCK, LOCK, INTRUSION, etc.
+  content.set("fields/source/stringValue", source);       // mobile, rfid, sensor
+  content.set("fields/status/stringValue", status);       // success, failed, alert
+  content.set("fields/message/stringValue", note);        // Plain text description
   content.set("fields/timestamp/timestampValue", ts);
-  content.set("fields/created_at/timestampValue", ts);
-  content.set("fields/client_timestamp/timestampValue", ts);
+
+  Serial.printf("[Log] %s | %s | action=%s | source=%s | status=%s\n",
+                userId.c_str(), lockerId.c_str(), eventType.c_str(), source.c_str(), status.c_str());
 
   bool ok = Firebase.Firestore.createDocument(
       &fbdo,
@@ -590,8 +667,9 @@ bool createAccessLog(
       content.raw());
 
   if (!ok) {
-    Serial.print("[Firestore] Log create failed: ");
-    Serial.println(fbdo.errorReason());
+    Serial.printf("[Firestore] Log FAILED: %s\n", fbdo.errorReason());
+  } else {
+    Serial.println("[Firestore] Log OK");
   }
 
   return ok;
@@ -605,35 +683,25 @@ String getFieldString(FirebaseJson &payload, const char *path) {
   return "";
 }
 
+// SCHEMA COMPLIANCE: source field accepts only: mobile, rfid, sensor
 String normalizeSource(const String &source) {
   String s = source;
   s.toLowerCase();
   if (s.length() == 0) return "mobile";
-  if (s == "mobile_app" || s == "dashboard_fab" || s == "map_page_fab" || s == "activity_logs_fab" || s == "mobile") return "mobile";
-  if (s == "rfid_card" || s == "rfid") return "rfid";
-  if (s == "manual_button" || s == "manual") return "manual";
-  if (s == "timeout" || s == "auto") return "auto";
-  if (s == "sensor_alert" || s == "sensor") return "sensor";
-  return "mobile";
+  if (s.indexOf("mobile") >= 0) return "mobile";
+  if (s.indexOf("rfid") >= 0) return "rfid";
+  if (s.indexOf("sensor") >= 0) return "sensor";
+  return "mobile";  // Default
 }
 
-String resolveEventType(bool unlock, const String &source) {
-  String s = normalizeSource(source);
-  if (s == "rfid") return unlock ? "RFID_UNLOCK" : "RFID_LOCK";
-  if (s == "mobile") return unlock ? "MOBILE_UNLOCK" : "MOBILE_LOCK";
-  if (s == "manual") return unlock ? "MANUAL_UNLOCK" : "MANUAL_LOCK";
-  if (s == "auto") return unlock ? "AUTO_UNLOCK" : "AUTO_LOCK";
-  if (s == "sensor") return unlock ? "SENSOR_UNLOCK" : "SENSOR_LOCK";
-  return unlock ? "UNLOCK" : "LOCK";
-}
+// REMOVED: resolveEventType() not in schema. Action values are hardcoded as LOCK, UNLOCK, INTRUSION
 
+// Helper to classify auth source. Not in schema but aids internal state machine
 String resolveAuthMethod(const String &source) {
-  String s = normalizeSource(source);
-  if (s == "rfid") return "RFID";
-  if (s == "mobile") return "MOBILE_APP";
-  if (s == "manual") return "MANUAL";
-  if (s == "auto") return "SYSTEM";
-  if (s == "sensor") return "MAGNET_SENSOR";
+  String normalized = normalizeSource(source);
+  if (normalized == "rfid") return "RFID";
+  if (normalized == "mobile") return "MOBILE_APP";
+  if (normalized == "sensor") return "MAGNET_SENSOR";
   return "SYSTEM";
 }
 

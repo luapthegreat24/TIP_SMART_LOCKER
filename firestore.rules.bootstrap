@@ -1,0 +1,84 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // ============================================================================
+    // TEMPORARY BOOTSTRAP MODE - Allows seeding bootstrap data
+    // After seeding is complete, revert to firestore.rules (the strict version)
+    // ============================================================================
+
+    function isString(v) {
+      return v is string;
+    }
+
+    function isNumber(v) {
+      return v is number;
+    }
+
+    function isBool(v) {
+      return v is bool;
+    }
+
+    function isTimestamp(v) {
+      return v is timestamp;
+    }
+
+    function hasOnlyKeys(data, keys) {
+      return data.keys().hasOnly(keys);
+    }
+
+    // ============================================================================
+    // LOCKERS COLLECTION - TEMPORARY OPEN FOR BOOTSTRAP
+    // ============================================================================
+    match /lockers/{lockerId} {
+      allow read: if true;
+      
+      // Allow writes temporarily for bootstrap seeding
+      allow create, update, delete: if true;
+
+      function validateLockerCreate() {
+        return hasOnlyKeys(request.resource.data, [
+          'locker_id',
+          'building_number',
+          'floor',
+          'lock_state',
+          'sensor_state',
+          'is_assigned',
+          'status',
+          'last_updated'
+        ])
+        && isString(request.resource.data.locker_id)
+        && isNumber(request.resource.data.building_number)
+        && isString(request.resource.data.floor)
+        && request.resource.data.lock_state in ['locked', 'unlocked']
+        && request.resource.data.sensor_state in ['open', 'closed']
+        && isBool(request.resource.data.is_assigned)
+        && isString(request.resource.data.status)
+        && (isTimestamp(request.resource.data.last_updated) 
+            || request.resource.data.last_updated == request.time);
+      }
+    }
+
+    // ============================================================================
+    // OTHER COLLECTIONS - BLOCKED DURING BOOTSTRAP
+    // ============================================================================
+    match /users/{userId} {
+      allow read: if true;
+      allow create, update, delete: if false;
+    }
+
+    match /assignments/{assignmentId} {
+      allow read: if true;
+      allow create, update, delete: if false;
+    }
+
+    match /logs/{logId} {
+      allow read: if true;
+      allow create, update, delete: if false;
+    }
+
+    match /alerts/{alertId} {
+      allow read: if true;
+      allow create, update, delete: if false;
+    }
+  }
+}

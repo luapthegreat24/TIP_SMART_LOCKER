@@ -1,0 +1,71 @@
+{
+  "__meta__": {
+    "version": "9.16.0",
+    "toolVersion": "11.16.1",
+    "dataVersion": "2.16.0"
+  },
+  "tip-locker_lockers_locker_1": {
+    "__meta__": {
+      "path": "projects/tip-locker/databases/(default)/documents/lockers/locker_1",
+      "name": "projects/tip-locker/databases/(default)/documents/lockers/locker_1"
+    },
+    "data": {
+      "locker_id": {
+        "stringValue": "locker_1"
+      },
+      "building_number": {
+        "integerValue": "9"
+      },
+      "floor": {
+        "stringValue": "Ground Floor"
+      },
+      "lock_state": {
+        "stringValue": "locked"
+      },
+      "sensor_state": {
+        "stringValue": "closed"
+      },
+      "is_assigned": {
+        "booleanValue": false
+      },
+      "status": {
+        "stringValue": "functional"
+      },
+      "last_updated": {
+        "timestampValue": "2026-04-13T00:39:14.206Z"
+      }
+    }
+  },
+  "tip-locker_lockers_locker_2": {
+    "__meta__": {
+      "path": "projects/tip-locker/databases/(default)/documents/lockers/locker_2",
+      "name": "projects/tip-locker/databases/(default)/documents/lockers/locker_2"
+    },
+    "data": {
+      "locker_id": {
+        "stringValue": "locker_2"
+      },
+      "building_number": {
+        "integerValue": "9"
+      },
+      "floor": {
+        "stringValue": "Ground Floor"
+      },
+      "lock_state": {
+        "stringValue": "locked"
+      },
+      "sensor_state": {
+        "stringValue": "closed"
+      },
+      "is_assigned": {
+        "booleanValue": false
+      },
+      "status": {
+        "stringValue": "functional"
+      },
+      "last_updated": {
+        "timestampValue": "2026-04-13T00:39:14.207Z"
+      }
+    }
+  }
+}

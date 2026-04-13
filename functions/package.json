@@ -1,0 +1,22 @@
+{
+  "name": "tip-locker-functions",
+  "version": "1.0.0",
+  "private": true,
+  "engines": {
+    "node": "20"
+  },
+  "main": "index.js",
+  "scripts": {
+    "lint": "echo \"No lint configured\"",
+    "serve": "firebase emulators:start --only functions",
+    "deploy": "firebase deploy --only functions",
+    "reset:firestore": "node scripts/reset_firestore.js --confirm --confirm",
+    "reset:firestore:dry": "node scripts/reset_firestore.js",
+    "rebuild:schema:dry": "node scripts/rebuild_schema.js",
+    "rebuild:schema": "node scripts/rebuild_schema.js --confirm --confirm"
+  },
+  "dependencies": {
+    "firebase-admin": "^12.7.0",
+    "firebase-functions": "^5.1.1"
+  }
+}

@@ -1,0 +1,93 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // ============================================================================
+    // FIRESTORE RULES - AUTHENTICATION & SECURITY
+    // ============================================================================
+
+    // ============================================================================
+    // LOCKERS COLLECTION - HARDWARE INVENTORY & STATUS
+    // ============================================================================
+    match /lockers/{lockerId} {
+      allow read: if true;
+      
+      // ============ SCHEMA + COMMAND FIELDS ENFORCEMENT ============
+      // Schema: locker_id, building_number, floor, sensor_state, is_assigned, status, last_updated
+      // Commands: requested_state (app → ESP32)
+      // Total: 10 fields allowed (requested_source REMOVED)
+      
+      // Creates: enforce exact schema - only system/admin
+      allow create: if request.auth != null &&
+        request.resource.data.keys().hasOnly([
+          'locker_id', 'building_number', 'floor', 
+          'sensor_state', 'is_assigned', 'status', 'last_updated',
+          'requested_state'
+        ]);
+      
+      // Updates: authenticated users can modify specific fields
+      // Includes is_assigned for assignment creation flow
+      allow update: if request.auth != null &&
+        !request.resource.data.keys().hasAny([
+          'lock_state', 'hardware_status', 'device_state', 'command_status',
+          'auto_lock_enabled', 'auto_lock_delay_s', 'opened_at_epoch_s',
+          'sensor_closed', 'magnetic_sensor', 'uid', 'action',
+          'last_hardware_source', 'last_source', 'hardware_last_update', 'updated_at',
+          'requested_source'
+        ]);
+      
+      allow delete: if false;
+    }
+
+    // ============================================================================
+    // USERS COLLECTION - AUTHENTICATION & PROFILE MANAGEMENT
+    // ============================================================================
+    match /users/{userId} {
+      // Allow authenticated users to read their own profile
+      allow read: if request.auth.uid == userId;
+      
+      // Allow authenticated users to create their own profile during signup
+      allow create: if request.auth.uid == userId &&
+        request.resource.data.keys().hasAll(['user_id', 'email', 'full_name', 'role', 'campus'])
+        && request.resource.data.user_id == userId
+        && request.resource.data.role == 'student'
+        && request.resource.data.email.matches('^[a-zA-Z0-9._%+-]+@tip\\.edu\\.ph$');
+      
+      // Allow users to update their own profile
+      allow update: if request.auth.uid == userId;
+      
+      // Prevent deletion
+      allow delete: if false;
+      
+      // Allow admin reads (optional)
+      allow read: if get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin';
+    }
+
+    // ============================================================================
+    // ASSIGNMENTS COLLECTION - LOCKER-USER MAPPINGS
+    // ============================================================================
+    match /assignments/{assignmentId} {
+      allow read: if true;
+      
+      // Allow authenticated users to create/update assignments for themselves
+      allow create, update: if request.auth != null &&
+        (request.auth.uid == request.resource.data.user_id || 
+         get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin');
+      
+      allow delete: if false;
+    }
+
+    match /logs/{logId} {
+      allow read: if true;
+      
+      // Allow authenticated users and ESP32 to create logs
+      allow create, update: if request.auth != null;
+      
+      allow delete: if false;
+    }
+
+    match /alerts/{alertId} {
+      allow read: if true;
+      allow create, update, delete: if false;
+    }
+  }
+}
