@@ -64,7 +64,7 @@ class LockToastOverlay {
                     color: T.surfaceAlt,
                     borderRadius: BorderRadius.circular(T.r12),
                     border: Border.all(
-                      color: accent.withOpacity(0.25),
+                      color: accent.withValues(alpha: 0.25),
                       width: T.strokeSm,
                     ),
                   ),

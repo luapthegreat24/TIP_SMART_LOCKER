@@ -1,0 +1,10 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Prototype-only insecure rules.
+    // This allows unauthenticated and anonymous device access.
+    match /{document=**} {
+      allow read, write: if true;
+    }
+  }
+}

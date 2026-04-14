@@ -74,7 +74,7 @@ class _ComicCardState extends State<ComicCard>
       onTap: widget.onTap,
       child: AnimatedBuilder(
         animation: _progress,
-        builder: (_, __) {
+        builder: (_, _) {
           final shadowOffset =
               widget.shadowOffset * (1 - _progress.value * 0.8);
           final translation = _progress.value * widget.shadowOffset * 0.5;

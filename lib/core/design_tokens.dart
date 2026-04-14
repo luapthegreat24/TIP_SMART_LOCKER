@@ -28,6 +28,7 @@ abstract class T {
 
   static const double gap4 = 4.0;
   static const double gap8 = 8.0;
+  static const double gap10 = 10.0;
   static const double gap12 = 12.0;
   static const double gap16 = 16.0;
   static const double gap20 = 20.0;

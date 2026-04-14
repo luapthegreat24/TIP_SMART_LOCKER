@@ -10,6 +10,7 @@ class SettingsScreen extends StatelessWidget {
   final VoidCallback onBack;
   final AppUser user;
   final Future<void> Function() onLogout;
+  final Future<String?> Function() onDeleteAccount;
   final double contentBottomPadding;
   final bool notifEnabled;
   final bool autoLock;
@@ -22,6 +23,7 @@ class SettingsScreen extends StatelessWidget {
     required this.onBack,
     required this.user,
     required this.onLogout,
+    required this.onDeleteAccount,
     required this.contentBottomPadding,
     required this.notifEnabled,
     required this.autoLock,
@@ -170,7 +172,7 @@ class SettingsScreen extends StatelessWidget {
                                     color: T.accentDim,
                                     borderRadius: BorderRadius.circular(T.r16),
                                     border: Border.all(
-                                      color: T.accent.withOpacity(0.35),
+                                      color: T.accent.withValues(alpha: 0.35),
                                       width: T.strokeSm,
                                     ),
                                   ),
@@ -221,7 +223,9 @@ class SettingsScreen extends StatelessWidget {
                                             T.r8,
                                           ),
                                           border: Border.all(
-                                            color: T.green.withOpacity(0.3),
+                                            color: T.green.withValues(
+                                              alpha: 0.3,
+                                            ),
                                             width: T.strokeSm,
                                           ),
                                         ),
@@ -405,10 +409,10 @@ class SettingsScreen extends StatelessWidget {
                             style: OutlinedButton.styleFrom(
                               foregroundColor: T.red,
                               side: BorderSide(
-                                color: T.red.withOpacity(0.35),
+                                color: T.red.withValues(alpha: 0.35),
                                 width: T.strokeSm,
                               ),
-                              backgroundColor: T.redDim.withOpacity(0.28),
+                              backgroundColor: T.redDim.withValues(alpha: 0.28),
                               padding: const EdgeInsets.symmetric(
                                 horizontal: 16,
                                 vertical: 14,
@@ -420,6 +424,98 @@ class SettingsScreen extends StatelessWidget {
                             icon: const Icon(Icons.logout_rounded),
                             label: const Text(
                               'Sign out',
+                              style: TextStyle(fontWeight: FontWeight.w800),
+                            ),
+                          ),
+                        ),
+                        const SizedBox(height: T.gap10),
+                        SizedBox(
+                          width: double.infinity,
+                          child: OutlinedButton.icon(
+                            onPressed: () async {
+                              final shouldDelete = await showDialog<bool>(
+                                context: context,
+                                builder: (dialogContext) => AlertDialog(
+                                  backgroundColor: T.surface,
+                                  shape: RoundedRectangleBorder(
+                                    borderRadius: BorderRadius.circular(T.r12),
+                                    side: const BorderSide(
+                                      color: T.border,
+                                      width: T.strokeSm,
+                                    ),
+                                  ),
+                                  title: const Text(
+                                    'Delete Account',
+                                    style: TextStyle(
+                                      color: T.textPrimary,
+                                      fontWeight: FontWeight.w800,
+                                      fontSize: 16,
+                                    ),
+                                  ),
+                                  content: const Text(
+                                    'This will permanently delete your account, assignment, related locker links, and activity records. This action cannot be undone.',
+                                    style: TextStyle(
+                                      color: T.textSecondary,
+                                      fontSize: 13,
+                                      height: 1.4,
+                                    ),
+                                  ),
+                                  actions: [
+                                    TextButton(
+                                      onPressed: () => Navigator.of(
+                                        dialogContext,
+                                      ).pop(false),
+                                      child: const Text(
+                                        'Cancel',
+                                        style: TextStyle(color: T.textMuted),
+                                      ),
+                                    ),
+                                    FilledButton(
+                                      style: FilledButton.styleFrom(
+                                        backgroundColor: T.red,
+                                        foregroundColor: T.bg,
+                                      ),
+                                      onPressed: () =>
+                                          Navigator.of(dialogContext).pop(true),
+                                      child: const Text('Delete'),
+                                    ),
+                                  ],
+                                ),
+                              );
+
+                              if (shouldDelete != true) {
+                                return;
+                              }
+
+                              final result = await onDeleteAccount();
+                              if (!context.mounted) {
+                                return;
+                              }
+
+                              if (result != null) {
+                                ScaffoldMessenger.of(
+                                  context,
+                                ).showSnackBar(SnackBar(content: Text(result)));
+                              }
+                            },
+                            style: OutlinedButton.styleFrom(
+                              foregroundColor: T.red,
+                              side: BorderSide(
+                                color: T.red.withValues(alpha: 0.35),
+                                width: T.strokeSm,
+                              ),
+                              backgroundColor: T.redDim.withValues(alpha: 0.16),
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: 16,
+                                vertical: 14,
+                              ),
+                              shape: RoundedRectangleBorder(
+                                borderRadius: BorderRadius.circular(T.r12),
+                              ),
+                            ),
+                            icon: const Icon(Icons.delete_forever_rounded),
+                            label: const Text(
+                              'Delete account',
                               style: TextStyle(fontWeight: FontWeight.w800),
                             ),
                           ),
@@ -443,7 +539,10 @@ class SettingsScreen extends StatelessWidget {
       decoration: BoxDecoration(
         color: bg,
         borderRadius: BorderRadius.circular(T.r8),
-        border: Border.all(color: color.withOpacity(0.3), width: T.strokeSm),
+        border: Border.all(
+          color: color.withValues(alpha: 0.3),
+          width: T.strokeSm,
+        ),
       ),
       child: Icon(icon, color: color, size: 14),
     );

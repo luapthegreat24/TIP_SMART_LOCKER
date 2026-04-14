@@ -40,7 +40,7 @@ class FloatingNavBar extends StatelessWidget {
                 borderRadius: BorderRadius.circular(20),
                 boxShadow: [
                   BoxShadow(
-                    color: T.shadow.withOpacity(0.55),
+                    color: T.shadow.withValues(alpha: 0.55),
                     blurRadius: 14,
                     offset: const Offset(0, 6),
                   ),
@@ -55,7 +55,7 @@ class FloatingNavBar extends StatelessWidget {
             bottom: -2,
             child: DecoratedBox(
               decoration: BoxDecoration(
-                color: T.shadow.withOpacity(0.92),
+                color: T.shadow.withValues(alpha: 0.92),
                 borderRadius: BorderRadius.circular(34),
               ),
             ),
@@ -80,7 +80,7 @@ class FloatingNavBar extends StatelessWidget {
                     Container(
                       width: 1,
                       height: 28,
-                      color: T.border.withOpacity(0.65),
+                      color: T.border.withValues(alpha: 0.65),
                     ),
                 ],
               ],
@@ -120,10 +120,10 @@ class _NavItem extends StatelessWidget {
         curve: Curves.easeOutCubic,
         margin: const EdgeInsets.symmetric(horizontal: 6, vertical: 8),
         decoration: BoxDecoration(
-          color: isActive ? T.accent.withOpacity(0.12) : Colors.transparent,
+          color: isActive ? T.accent.withValues(alpha: 0.12) : Colors.transparent,
           borderRadius: BorderRadius.circular(20),
           border: Border.all(
-            color: isActive ? T.accent.withOpacity(0.35) : Colors.transparent,
+            color: isActive ? T.accent.withValues(alpha: 0.35) : Colors.transparent,
             width: T.strokeSm,
           ),
         ),
@@ -133,7 +133,7 @@ class _NavItem extends StatelessWidget {
             child: Icon(
               item.icon,
               size: isActive ? 28 : 25,
-              color: isActive ? T.accent : T.textPrimary.withOpacity(0.88),
+              color: isActive ? T.accent : T.textPrimary.withValues(alpha: 0.88),
             ),
           ),
         ),

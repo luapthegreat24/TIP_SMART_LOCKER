@@ -13,18 +13,29 @@ import 'screens/locker_selection_screen.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
-  await Firebase.initializeApp(options: DefaultFirebaseOptions.currentPlatform);
+  String? startupError;
+  try {
+    await Firebase.initializeApp(
+      options: DefaultFirebaseOptions.currentPlatform,
+    );
+  } catch (e, st) {
+    startupError = 'Firebase startup failed: $e';
+    debugPrint(startupError);
+    debugPrint(st.toString());
+  }
   SystemChrome.setSystemUIOverlayStyle(
     const SystemUiOverlayStyle(
       statusBarColor: Colors.transparent,
       statusBarIconBrightness: Brightness.light,
     ),
   );
-  runApp(const LockerApp());
+  runApp(LockerApp(startupError: startupError));
 }
 
 class LockerApp extends StatefulWidget {
-  const LockerApp({super.key});
+  const LockerApp({super.key, this.startupError});
+
+  final String? startupError;
 
   @override
   State<LockerApp> createState() => _LockerAppState();
@@ -51,6 +62,14 @@ class _LockerAppState extends State<LockerApp> {
 
   @override
   Widget build(BuildContext context) {
+    if (widget.startupError != null) {
+      return MaterialApp(
+        title: 'My Locker',
+        debugShowCheckedModeBanner: false,
+        home: _StartupErrorScreen(message: widget.startupError!),
+      );
+    }
+
     return AnimatedBuilder(
       animation: _authController,
       builder: (context, _) => ChangeNotifierProvider.value(
@@ -102,6 +121,45 @@ class _AppLoadingScreen extends StatelessWidget {
     return const Scaffold(
       backgroundColor: T.bg,
       body: Center(child: CircularProgressIndicator(color: T.accent)),
+    );
+  }
+}
+
+class _StartupErrorScreen extends StatelessWidget {
+  const _StartupErrorScreen({required this.message});
+
+  final String message;
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      backgroundColor: T.bg,
+      body: Center(
+        child: Padding(
+          padding: const EdgeInsets.all(24),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Icon(Icons.error_outline_rounded, color: T.red, size: 40),
+              const SizedBox(height: 12),
+              const Text(
+                'App startup failed',
+                style: TextStyle(
+                  color: T.textPrimary,
+                  fontSize: 18,
+                  fontWeight: FontWeight.w700,
+                ),
+              ),
+              const SizedBox(height: 8),
+              Text(
+                message,
+                textAlign: TextAlign.center,
+                style: const TextStyle(color: T.textSecondary, fontSize: 12),
+              ),
+            ],
+          ),
+        ),
+      ),
     );
   }
 }

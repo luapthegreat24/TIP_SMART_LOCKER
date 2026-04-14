@@ -23,11 +23,16 @@ import 'settings_screen.dart';
 ActivityItem _activityFromLog(LockerLogEntry log, int index) {
   final event = log.eventType.toUpperCase();
   final type = switch (event) {
+    'MOBILE_UNLOCK_REQUEST' ||
+    'MOBILE_LOCK_REQUEST' => ActivityType.mobileUnlock,
     'MOBILE_UNLOCK' => ActivityType.mobileUnlock,
     'RFID_UNLOCK' => ActivityType.rfidUnlock,
     'RFID_LOCK' => ActivityType.rfidLock,
     'AUTO_LOCK' => ActivityType.manualLock,
     'MANUAL_LOCK' => ActivityType.manualLock,
+    'INTRUSION_ALERT' ||
+    'UNAUTHORIZED_OPEN' ||
+    'FORCED_OPEN' => ActivityType.security,
     'LOGIN_SUCCESS' ||
     'LOGIN_FAILED' ||
     'LOGOUT' ||
@@ -45,6 +50,12 @@ ActivityItem _activityFromLog(LockerLogEntry log, int index) {
     'MANUAL_LOCK' => 'Locked via Manual Lock',
     'MANUAL_UNLOCK' => 'Unlocked via Manual Lock',
     'AUTO_LOCK' => 'Locked automatically after inactivity',
+    'INTRUSION_ALERT' => 'Unauthorized opening detected by sensor',
+    'UNAUTHORIZED_OPEN' => 'Unauthorized locker opening detected',
+    'FORCED_OPEN' => 'Forced opening detected by sensor',
+    'MANUAL_OPEN' => 'Locker opened according to sensor',
+    'SENSOR_CLOSED' => 'Locker closed according to sensor',
+    'HARDWARE_HEARTBEAT' => 'Hardware status heartbeat received',
     'LOGIN_SUCCESS' => 'Successful sign in',
     'LOGIN_FAILED' => 'Failed sign in attempt',
     'LOGIN_BLOCKED' => 'Sign in blocked due to lockout',
@@ -53,6 +64,9 @@ ActivityItem _activityFromLog(LockerLogEntry log, int index) {
     'SIGNUP_SUCCESS' => 'New account registered',
     'SETTING_CHANGED' => 'Setting updated',
     'ASSIGNED' => 'Locker Assigned',
+    'MOBILE_UNLOCK_REQUEST' => 'Mobile unlock request sent to locker',
+    'MOBILE_LOCK_REQUEST' => 'Mobile lock request sent to locker',
+    'MOBILE_COMMAND_REJECTED' => 'Locker command rejected by hardware',
     _ =>
       log.details.trim().isNotEmpty
           ? log.details.trim()
@@ -114,10 +128,34 @@ class _LockerDashboardScreenState extends State<LockerDashboardScreen>
   Offset? _lockFabPos;
   bool _isDraggingLockFab = false;
 
-  final int _alertCount = 0;
   DateTime? _lastToggledAt;
   bool _notifEnabled = true;
   bool _autoLock = true;
+  LockerRuntimeState? _lockerRuntimeState;
+
+  bool get _isLockedFromState {
+    final runtime = _lockerRuntimeState;
+    if (runtime == null) {
+      return _lockController.isLocked;
+    }
+    return !runtime.sensorIsOpen;
+  }
+
+  bool get _isAwaitingHardwareState =>
+      _isCommandInFlight && _lockerRuntimeState?.deviceOnline == true;
+
+  int get _alertCount => _lockerRuntimeState?.hasSecurityAlert == true ? 1 : 0;
+
+  String get _statusSupportingLabel {
+    final runtime = _lockerRuntimeState;
+    if (runtime == null) {
+      return _isLockedFromState ? 'Door closed' : 'Door open';
+    }
+    if (_isAwaitingHardwareState) {
+      return 'Awaiting sensor confirmation';
+    }
+    return runtime.sensorIsOpen ? 'SENSOR: OPEN' : 'SENSOR: CLOSED';
+  }
 
   String get _lockerIdLabel {
     final id = widget.user.activeLockerId.trim();
@@ -149,7 +187,9 @@ class _LockerDashboardScreenState extends State<LockerDashboardScreen>
   late final Animation<Color?> _lockBg;
   final LockToastOverlay _lockToastOverlay = LockToastOverlay();
   StreamSubscription<List<LockerLogEntry>>? _logsSubscription;
+  StreamSubscription<LockerRuntimeState?>? _lockerRuntimeSubscription;
   Timer? _autoLockTimer;
+  bool _isCommandInFlight = false;
 
   List<ActivityItem> _activities = const [];
 
@@ -198,6 +238,7 @@ class _LockerDashboardScreenState extends State<LockerDashboardScreen>
     _lockController.addListener(_onGlobalLockChanged);
 
     _subscribeToLogs();
+    _subscribeToLockerRuntime();
   }
 
   @override
@@ -206,6 +247,7 @@ class _LockerDashboardScreenState extends State<LockerDashboardScreen>
     _lockController.removeListener(_onGlobalLockChanged);
     _lockToastOverlay.dispose();
     _logsSubscription?.cancel();
+    _lockerRuntimeSubscription?.cancel();
     _entranceCtrl.dispose();
     _lockCtrl.dispose();
     super.dispose();
@@ -229,7 +271,7 @@ class _LockerDashboardScreenState extends State<LockerDashboardScreen>
 
   Widget _slide(int index, Widget child) => AnimatedBuilder(
     animation: _slides[index],
-    builder: (_, __) {
+    builder: (_, _) {
       final value = _slides[index].value.clamp(0.0, 1.0);
       return Opacity(
         opacity: value,
@@ -259,48 +301,59 @@ class _LockerDashboardScreenState extends State<LockerDashboardScreen>
     bool showToast = true,
     bool playHaptic = true,
   }) async {
-    final wasLocked = _lockController.isLocked;
-    final isLocked = _lockController.toggle();
+    if (_isCommandInFlight) {
+      return;
+    }
+
+    setState(() {
+      _isCommandInFlight = true;
+    });
+
+    final wasLocked = _isLockedFromState;
+    final targetLocked = !wasLocked;
     if (playHaptic) {
       HapticFeedback.heavyImpact();
     }
+
+    final userId = widget.user.userId.trim();
+    final lockerId = widget.user.activeLockerId.trim();
+    final result = await widget.controller.requestLockerCommand(
+      lockerId: lockerId,
+      userId: userId,
+      lock: targetLocked,
+      source: 'dashboard_fab',
+    );
+
+    if (!mounted) {
+      return;
+    }
+
+    setState(() {
+      _isCommandInFlight = false;
+    });
+
+    if (result != null) {
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text(result)));
+      return;
+    }
+
     if (showToast) {
       unawaited(
         _lockToastOverlay.show(
           context: context,
           vsync: this,
-          isLocked: isLocked,
+          isLocked: targetLocked,
         ),
       );
     }
 
-    final userId = widget.user.userId.trim();
-    final lockerId = widget.user.activeLockerId.trim();
-    if (userId.isNotEmpty && lockerId.isNotEmpty) {
-      await widget.controller.addLogEvent(
-        userId: userId,
-        lockerId: lockerId,
-        eventType: wasLocked ? 'MOBILE_UNLOCK' : 'MOBILE_LOCK',
-        authMethod: 'Mobile App',
-        source: 'dashboard_fab',
-        status: 'success',
-        details: wasLocked
-            ? 'Locker unlocked via dashboard toggle.'
-            : 'Locker locked via dashboard toggle.',
-        metadata: {
-          'state_before': wasLocked ? 'locked' : 'unlocked',
-          'state_after': wasLocked ? 'unlocked' : 'locked',
-        },
-      );
-    }
-
-    if (!mounted) {
-      return;
-    }
+    // Sensor telemetry remains the source of truth for visible lock state.
   }
 
   void _registerUserActivity() {
-    if (!_autoLock || _lockController.isLocked) {
+    if (!_autoLock || _isLockedFromState) {
       _autoLockTimer?.cancel();
       return;
     }
@@ -312,34 +365,28 @@ class _LockerDashboardScreenState extends State<LockerDashboardScreen>
   }
 
   Future<void> _runAutoLock() async {
-    if (!mounted || !_autoLock || _lockController.isLocked) {
+    if (!mounted || !_autoLock || _isLockedFromState || _isCommandInFlight) {
       return;
     }
 
-    _lockController.setLocked(true);
     HapticFeedback.mediumImpact();
-    unawaited(
-      _lockToastOverlay.show(
-        context: context,
-        vsync: this,
-        isLocked: _lockController.isLocked,
-      ),
-    );
 
     final userId = widget.user.userId.trim();
     final lockerId = widget.user.activeLockerId.trim();
-    if (userId.isNotEmpty && lockerId.isNotEmpty) {
-      await widget.controller.addLogEvent(
-        userId: userId,
-        lockerId: lockerId,
-        eventType: 'AUTO_LOCK',
-        authMethod: 'Mobile App',
-        source: 'auto_lock_timer',
-        status: 'success',
-        details: 'Locker locked automatically after 30 seconds of inactivity.',
-        metadata: {'idle_seconds': _autoLockDelay.inSeconds},
-      );
+    final result = await widget.controller.requestLockerCommand(
+      lockerId: lockerId,
+      userId: userId,
+      lock: true,
+      source: 'auto_lock_timer',
+    );
+
+    if (!mounted || result != null) {
+      return;
     }
+
+    unawaited(
+      _lockToastOverlay.show(context: context, vsync: this, isLocked: true),
+    );
   }
 
   void _subscribeToLogs() {
@@ -349,7 +396,11 @@ class _LockerDashboardScreenState extends State<LockerDashboardScreen>
     }
 
     _logsSubscription = widget.controller
-        .watchLogsForUser(userId: userId, email: widget.user.email)
+        .watchLogsForUser(
+          userId: userId,
+          email: widget.user.email,
+          lockerId: widget.user.activeLockerId,
+        )
         .listen((entries) {
           if (!mounted) {
             return;
@@ -362,6 +413,31 @@ class _LockerDashboardScreenState extends State<LockerDashboardScreen>
 
           setState(() {
             _activities = items;
+          });
+        });
+  }
+
+  void _subscribeToLockerRuntime() {
+    final lockerId = widget.user.activeLockerId.trim();
+    if (lockerId.isEmpty) {
+      return;
+    }
+
+    _lockerRuntimeSubscription = widget.controller
+        .watchLockerRuntimeState(lockerId: lockerId)
+        .listen((runtime) {
+          if (!mounted || runtime == null) {
+            return;
+          }
+
+          final nextIsLocked = !runtime.sensorIsOpen;
+          if (_lockController.isLocked != nextIsLocked) {
+            _lockController.setLocked(nextIsLocked);
+          }
+
+          setState(() {
+            _lockerRuntimeState = runtime;
+            _lastToggledAt = runtime.updatedAt ?? _lastToggledAt;
           });
         });
   }
@@ -599,7 +675,7 @@ class _LockerDashboardScreenState extends State<LockerDashboardScreen>
                     color: _lockerBadgeBackground,
                     borderRadius: BorderRadius.circular(T.r12),
                     border: Border.all(
-                      color: _lockerBadgeColor.withOpacity(0.35),
+                      color: _lockerBadgeColor.withValues(alpha: 0.35),
                       width: T.strokeSm,
                     ),
                   ),
@@ -660,7 +736,7 @@ class _LockerDashboardScreenState extends State<LockerDashboardScreen>
                 ),
                 const SizedBox(height: T.gap12),
                 Text(
-                  _lockController.isLocked
+                  _isLockedFromState
                       ? 'Everything is secured.${_lastToggledAt != null ? ' Locked ${_timeAgo(_lastToggledAt!)}.' : ''}'
                       : 'Locker is open. Tap the lock icon when you\'re done.',
                   style: const TextStyle(
@@ -693,7 +769,10 @@ class _LockerDashboardScreenState extends State<LockerDashboardScreen>
       decoration: BoxDecoration(
         color: bg,
         borderRadius: BorderRadius.circular(T.r8),
-        border: Border.all(color: color.withOpacity(0.3), width: T.strokeSm),
+        border: Border.all(
+          color: color.withValues(alpha: 0.3),
+          width: T.strokeSm,
+        ),
       ),
       child: Icon(icon, color: color, size: 14),
     );
@@ -712,7 +791,7 @@ class _LockerDashboardScreenState extends State<LockerDashboardScreen>
           Expanded(
             child: AnimatedBuilder(
               animation: Listenable.merge([_lockColor, _lockBg]),
-              builder: (_, __) {
+              builder: (_, _) {
                 final color = _lockColor.value ?? T.green;
                 final bg = _lockBg.value ?? T.greenDim;
                 return cardShell(
@@ -729,7 +808,7 @@ class _LockerDashboardScreenState extends State<LockerDashboardScreen>
                         child: Row(
                           children: [
                             iconChip(
-                              _lockController.isLocked
+                              _isLockedFromState
                                   ? Icons.lock_rounded
                                   : Icons.lock_open_rounded,
                               color,
@@ -749,7 +828,7 @@ class _LockerDashboardScreenState extends State<LockerDashboardScreen>
                             mainAxisAlignment: MainAxisAlignment.center,
                             children: [
                               Text(
-                                _lockController.isLocked ? 'Locked' : 'Open',
+                                _isLockedFromState ? 'CLOSED' : 'OPEN',
                                 style: TextStyle(
                                   fontSize: 27,
                                   fontWeight: FontWeight.w900,
@@ -760,9 +839,7 @@ class _LockerDashboardScreenState extends State<LockerDashboardScreen>
                               ),
                               const SizedBox(height: T.gap4),
                               Text(
-                                _lockController.isLocked
-                                    ? 'Secure'
-                                    : 'Access open',
+                                _statusSupportingLabel,
                                 style: const TextStyle(
                                   fontSize: 12,
                                   fontWeight: FontWeight.w400,
@@ -807,16 +884,16 @@ class _LockerDashboardScreenState extends State<LockerDashboardScreen>
                     ),
                   ),
                   divider,
-                  const Expanded(
+                  Expanded(
                     child: Padding(
-                      padding: EdgeInsets.all(T.gap12),
+                      padding: const EdgeInsets.all(T.gap12),
                       child: Column(
                         crossAxisAlignment: CrossAxisAlignment.start,
                         mainAxisAlignment: MainAxisAlignment.center,
                         children: [
                           Text(
-                            '0',
-                            style: TextStyle(
+                            '$_alertCount',
+                            style: const TextStyle(
                               fontSize: 36,
                               fontWeight: FontWeight.w900,
                               color: T.textPrimary,
@@ -861,7 +938,7 @@ class _LockerDashboardScreenState extends State<LockerDashboardScreen>
                 color: T.amberDim,
                 borderRadius: BorderRadius.circular(T.r12),
                 border: Border.all(
-                  color: T.amber.withOpacity(0.3),
+                  color: T.amber.withValues(alpha: 0.3),
                   width: T.strokeSm,
                 ),
               ),
@@ -923,7 +1000,7 @@ class _LockerDashboardScreenState extends State<LockerDashboardScreen>
                 color: T.accentDim,
                 borderRadius: BorderRadius.circular(T.r8),
                 border: Border.all(
-                  color: T.accent.withOpacity(0.3),
+                  color: T.accent.withValues(alpha: 0.3),
                   width: T.strokeSm,
                 ),
               ),
@@ -1097,6 +1174,8 @@ class _LockerDashboardScreenState extends State<LockerDashboardScreen>
                         onBack: () => _onTabPressed(0),
                         user: widget.user,
                         onLogout: widget.onLogout,
+                        onDeleteAccount:
+                            widget.controller.deleteCurrentAccountAndRelations,
                         contentBottomPadding: _contentBottomPadding,
                         notifEnabled: _notifEnabled,
                         autoLock: _autoLock,
@@ -1196,14 +1275,14 @@ class _SpeechBubbleState extends State<_SpeechBubble>
             children: [
               AnimatedBuilder(
                 animation: _pulse,
-                builder: (_, __) => Container(
+                builder: (_, _) => Container(
                   width: 10,
                   height: 10,
                   decoration: BoxDecoration(
                     shape: BoxShape.circle,
                     color: Color.lerp(
                       T.accent,
-                      T.accent.withOpacity(0.45),
+                      T.accent.withValues(alpha: 0.45),
                       _pulse.value,
                     ),
                   ),
@@ -1298,7 +1377,7 @@ class _ActionButtonState extends State<_ActionButton>
       onTapCancel: _controller.reverse,
       child: AnimatedBuilder(
         animation: _scale,
-        builder: (_, __) => Transform.scale(
+        builder: (_, _) => Transform.scale(
           scale: _scale.value,
           child: Column(
             children: [
@@ -1306,10 +1385,10 @@ class _ActionButtonState extends State<_ActionButton>
                 width: double.infinity,
                 padding: const EdgeInsets.symmetric(vertical: 14),
                 decoration: BoxDecoration(
-                  color: widget.color.withOpacity(0.12),
+                  color: widget.color.withValues(alpha: 0.12),
                   borderRadius: BorderRadius.circular(T.r12),
                   border: Border.all(
-                    color: widget.color.withOpacity(0.4),
+                    color: widget.color.withValues(alpha: 0.4),
                     width: T.strokeSm,
                   ),
                 ),
@@ -1469,21 +1548,24 @@ class _LiveSyncBadgeState extends State<_LiveSyncBadge>
       decoration: BoxDecoration(
         color: T.greenDim,
         borderRadius: BorderRadius.circular(T.r8),
-        border: Border.all(color: T.green.withOpacity(0.3), width: T.strokeSm),
+        border: Border.all(
+          color: T.green.withValues(alpha: 0.3),
+          width: T.strokeSm,
+        ),
       ),
       child: Row(
         mainAxisSize: MainAxisSize.min,
         children: [
           AnimatedBuilder(
             animation: _controller,
-            builder: (_, __) => Container(
+            builder: (_, _) => Container(
               width: 6,
               height: 6,
               decoration: BoxDecoration(
                 shape: BoxShape.circle,
                 color: Color.lerp(
                   T.green,
-                  T.green.withOpacity(0.3),
+                  T.green.withValues(alpha: 0.3),
                   _controller.value,
                 ),
               ),
@@ -1666,7 +1748,11 @@ class _ActivityLogPageState extends State<_ActivityLogPage>
     }
 
     _logsSubscription = widget.controller
-        .watchLogsForUser(userId: userId, email: widget.userEmail)
+        .watchLogsForUser(
+          userId: userId,
+          email: widget.userEmail,
+          lockerId: widget.lockerId,
+        )
         .listen((entries) {
           if (!mounted) {
             return;
@@ -1881,7 +1967,7 @@ class _ActivityLogPageState extends State<_ActivityLogPage>
       selectedColor: T.accentDim,
       backgroundColor: T.surfaceAlt,
       side: BorderSide(
-        color: selected ? T.accent.withOpacity(0.45) : T.border,
+        color: selected ? T.accent.withValues(alpha: 0.45) : T.border,
         width: T.strokeSm,
       ),
       labelStyle: TextStyle(
@@ -2013,7 +2099,7 @@ class _ActivityLogPageState extends State<_ActivityLogPage>
                           focusedBorder: OutlineInputBorder(
                             borderRadius: BorderRadius.circular(T.r12),
                             borderSide: BorderSide(
-                              color: T.accent.withOpacity(0.5),
+                              color: T.accent.withValues(alpha: 0.5),
                               width: T.strokeSm,
                             ),
                           ),

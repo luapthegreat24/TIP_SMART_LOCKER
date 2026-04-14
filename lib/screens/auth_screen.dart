@@ -79,7 +79,7 @@ class _AuthScreenState extends State<AuthScreen>
     final idx = i.clamp(0, _slides.length - 1);
     return AnimatedBuilder(
       animation: _slides[idx],
-      builder: (_, __) {
+      builder: (_, _) {
         final v = _slides[idx].value.clamp(0.0, 1.0);
         return Opacity(
           opacity: v,
@@ -192,7 +192,9 @@ class _AuthScreenState extends State<AuthScreen>
                                         color: T.accentDim,
                                         borderRadius: BorderRadius.circular(8),
                                         border: Border.all(
-                                          color: T.accent.withOpacity(0.28),
+                                          color: T.accent.withValues(
+                                            alpha: 0.28,
+                                          ),
                                           width: T.strokeSm,
                                         ),
                                       ),
@@ -323,7 +325,9 @@ class _AuthScreenState extends State<AuthScreen>
                                               ),
                                           focusedBorder: UnderlineInputBorder(
                                             borderSide: BorderSide(
-                                              color: T.accent.withOpacity(0.6),
+                                              color: T.accent.withValues(
+                                                alpha: 0.6,
+                                              ),
                                               width: 1.5,
                                             ),
                                           ),
@@ -659,7 +663,7 @@ class _LineField extends StatelessWidget {
           decoration: InputDecoration(
             hintText: hint,
             hintStyle: TextStyle(
-              color: T.textMuted.withOpacity(0.5),
+              color: T.textMuted.withValues(alpha: 0.5),
               fontSize: 18,
               fontWeight: FontWeight.w400,
             ),
@@ -674,7 +678,7 @@ class _LineField extends StatelessWidget {
             ),
             focusedBorder: UnderlineInputBorder(
               borderSide: BorderSide(
-                color: T.accent.withOpacity(0.6),
+                color: T.accent.withValues(alpha: 0.6),
                 width: 1.5,
               ),
             ),
@@ -777,7 +781,7 @@ class _SubmitButtonState extends State<_SubmitButton>
       onTapCancel: () => _c.reverse(),
       child: AnimatedBuilder(
         animation: _c,
-        builder: (_, __) => Transform.scale(
+        builder: (_, _) => Transform.scale(
           scale: _scale.value,
           child: Opacity(
             opacity: _opacity.value,

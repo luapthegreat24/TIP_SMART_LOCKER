@@ -232,7 +232,7 @@ class _LockerMapScreenState extends State<LockerMapScreen>
                       _resolvedMapAssetPath!,
                       width: double.infinity,
                       fit: BoxFit.fitWidth,
-                      errorBuilder: (_, __, ___) =>
+                      errorBuilder: (_, _, _) =>
                           const SizedBox(height: 290, child: _MapPlaceholder()),
                     ),
             ),
@@ -487,7 +487,7 @@ class _LockerMapScreenState extends State<LockerMapScreen>
                                 ),
                                 const SizedBox(height: 10),
                                 Divider(
-                                  color: T.border.withOpacity(0.85),
+                                  color: T.border.withValues(alpha: 0.85),
                                   thickness: 1,
                                   height: 1,
                                 ),
@@ -670,7 +670,7 @@ class _LocationTag extends StatelessWidget {
         color: highlight ? T.accentDim : T.bg,
         borderRadius: BorderRadius.circular(T.r8),
         border: Border.all(
-          color: highlight ? T.accent.withOpacity(0.5) : T.border,
+          color: highlight ? T.accent.withValues(alpha: 0.5) : T.border,
           width: 1,
         ),
       ),

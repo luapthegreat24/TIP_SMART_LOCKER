@@ -444,7 +444,7 @@ class _SelectableCard extends StatelessWidget {
         padding: const EdgeInsets.all(12),
         decoration: BoxDecoration(
           color: disabled
-              ? T.surfaceAlt.withOpacity(0.4)
+              ? T.surfaceAlt.withValues(alpha: 0.4)
               : selected
               ? T.accentDim
               : T.surface,

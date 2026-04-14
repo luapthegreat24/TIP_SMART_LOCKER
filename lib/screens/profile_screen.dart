@@ -122,7 +122,7 @@ class ProfileScreen extends StatelessWidget {
                                     color: T.accentDim,
                                     borderRadius: BorderRadius.circular(T.r16),
                                     border: Border.all(
-                                      color: T.accent.withOpacity(0.35),
+                                      color: T.accent.withValues(alpha: 0.35),
                                       width: T.strokeSm,
                                     ),
                                   ),
@@ -155,7 +155,7 @@ class ProfileScreen extends StatelessWidget {
                                       ),
                                       const SizedBox(height: 6),
                                       Text(
-                                        '${user.role} · ${user.campus}',
+                                        '${user.role} - ${user.campus}',
                                         style: TextStyle(
                                           fontSize: 13,
                                           fontWeight: FontWeight.w400,
@@ -282,7 +282,10 @@ class ProfileScreen extends StatelessWidget {
       decoration: BoxDecoration(
         color: bg,
         borderRadius: BorderRadius.circular(T.r8),
-        border: Border.all(color: color.withOpacity(0.3), width: T.strokeSm),
+        border: Border.all(
+          color: color.withValues(alpha: 0.3),
+          width: T.strokeSm,
+        ),
       ),
       child: Icon(icon, color: color, size: 14),
     );
