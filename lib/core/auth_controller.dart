@@ -2266,7 +2266,7 @@ class LockerRuntimeState {
 
   bool get sensorIsOpen {
     if (sensorClosed != null) {
-      return !sensorClosed!;  // Inverted: sensorClosed=true means CLOSED, NOT open
+      return !sensorClosed!; // Inverted: sensorClosed=true means CLOSED, NOT open
     }
     final normalized = sensorState.trim().toUpperCase();
     return normalized == 'OPEN' || normalized == 'OPENED';
